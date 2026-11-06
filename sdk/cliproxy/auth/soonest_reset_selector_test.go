@@ -29,11 +29,11 @@ func TestSoonestResetFirstOrdering(t *testing.T) {
 	}{
 		{"long window", []*Auth{resetAuth("a", late, early), resetAuth("b", early, late)}, []string{"b", "b"}},
 		{"short window tie break", []*Auth{resetAuth("a", late, late), resetAuth("b", late, early)}, []string{"b", "b"}},
-		{"unknown long window last", []*Auth{resetAuth("a", zero, early), resetAuth("b", late, zero)}, []string{"b", "b"}},
-		{"unknown short window last", []*Auth{resetAuth("a", late, zero), resetAuth("b", late, early)}, []string{"b", "b"}},
+		{"unknown long window first", []*Auth{resetAuth("a", zero, early), resetAuth("b", late, zero)}, []string{"a", "a"}},
+		{"unknown short window first", []*Auth{resetAuth("a", late, zero), resetAuth("b", late, early)}, []string{"a", "a"}},
 		{"equal windows rotate", []*Auth{resetAuth("b", late, early), resetAuth("a", late, early)}, []string{"a", "b", "a"}},
 		{"unknown windows rotate", []*Auth{resetAuth("b", zero, zero), resetAuth("a", zero, zero)}, []string{"a", "b", "a"}},
-		{"expired windows last", []*Auth{resetAuth("a", now.Add(-time.Hour), early), resetAuth("b", late, zero)}, []string{"b"}},
+		{"expired windows first", []*Auth{resetAuth("a", now.Add(-time.Hour), early), resetAuth("b", late, zero)}, []string{"a"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

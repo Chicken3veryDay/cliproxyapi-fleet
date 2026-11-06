@@ -173,8 +173,9 @@ routing:
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
   # soonest-reset-first prefers the earliest known weekly reset within the highest available
   # priority tier, then the short-window reset, then round-robin for equal resets.
-  # Unknown or expired resets sort last. Reset observations are in-memory only, learned
-  # from Claude/Codex responses; existing usable session bindings keep priority.
+  # Unknown or expired resets sort first, so each account is probed once and then ordered;
+  # observations are in-memory only, learned from Claude/Codex responses. Existing usable
+  # session bindings keep priority.
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
   # followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,

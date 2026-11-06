@@ -45,11 +45,14 @@ func (s *SoonestResetFirstSelector) Pick(ctx context.Context, provider, model st
 func compareQuotaResets(a, b quotaResetWindows, now time.Time) int {
 	compare := func(a, b time.Time) int {
 		knownA, knownB := a.After(now), b.After(now)
+		// An unknown (or expired) reset sorts first: one pick teaches the hub that
+		// account's window, so after a restart every account is observed once
+		// instead of the first-seen account taking all traffic until its reset.
 		if knownA != knownB {
 			if knownA {
-				return -1
+				return 1
 			}
-			return 1
+			return -1
 		}
 		if !knownA {
 			return 0
