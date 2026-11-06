@@ -578,6 +578,7 @@ func (m *Manager) updateInternalLockedWithOptions(ctx context.Context, base, aut
 			auth.CopilotCatalog = existing.CopilotCatalog
 		}
 	}
+	auth.Quota.resetWindows = mergeQuotaResetWindows(auth.Quota.resetWindows, existing.Quota.resetWindows)
 	if auth.Generation <= existing.Generation {
 		auth.Generation = existing.Generation + 1
 	} else {
@@ -622,6 +623,7 @@ func (m *Manager) updateInternalLockedWithOptions(ctx context.Context, base, aut
 			auth.Quota = existing.Quota.Clone()
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
+			auth.Quota.resetWindows = observation.resetWindows
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 			auth.forceCooldownUntil = existing.forceCooldownUntil
 			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
@@ -730,6 +732,7 @@ func (m *Manager) updateInternalLockedWithOptions(ctx context.Context, base, aut
 			auth.Quota = existing.Quota
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
+			auth.Quota.resetWindows = observation.resetWindows
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 			auth.forceCooldownUntil = existing.forceCooldownUntil
 			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
