@@ -374,6 +374,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	auth.Success = existing.Success
 	auth.Failed = existing.Failed
 	auth.recentRequests = existing.recentRequests
+	auth.Quota.resetWindows = mergeQuotaResetWindows(auth.Quota.resetWindows, existing.Quota.resetWindows)
 	if auth.Generation <= existing.Generation {
 		auth.Generation = existing.Generation + 1
 	} else {
@@ -418,6 +419,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.Quota = existing.Quota.Clone()
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
+			auth.Quota.resetWindows = observation.resetWindows
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 		}
 		if credChanged || mode == updateModeRefresh {
@@ -501,6 +503,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.Quota = existing.Quota
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
+			auth.Quota.resetWindows = observation.resetWindows
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 			if auth.Status == StatusActive {
 				auth.Status = existing.Status

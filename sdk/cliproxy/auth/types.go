@@ -338,6 +338,9 @@ type RecentRequestBucket struct {
 
 // QuotaState contains limiter tracking data for a credential.
 type QuotaState struct {
+	// resetWindows retains the latest per-window observations for routing, in memory only.
+	resetWindows quotaResetWindows
+
 	// Exceeded indicates the credential recently hit a quota error.
 	Exceeded bool `json:"exceeded"`
 	// Reason provides an optional provider specific human readable description.

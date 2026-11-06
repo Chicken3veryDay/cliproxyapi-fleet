@@ -1363,7 +1363,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.Generation++
 		auth.UpdatedAt = now
 
-		if !result.SkipQuotaObservation {
+		if result.SkipQuotaObservation {
+			// Token counting preserves the generation snapshot, but any reported
+			// reset deadlines still apply to this credential.
+			auth.Quota.resetWindows.observe(result.Provider, collectQuotaSignals(result.Provider, responseHeaders), now)
+		} else {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
