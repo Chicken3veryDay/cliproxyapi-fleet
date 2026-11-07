@@ -12,6 +12,10 @@ import (
 type quotaWindowReset struct {
 	at         time.Time
 	observedAt time.Time
+	// used is the consumed fraction of the window (0..1); usedKnown is false
+	// when the upstream did not report it.
+	used      float64
+	usedKnown bool
 }
 
 type quotaResetWindows struct {
@@ -30,10 +34,17 @@ func mergeQuotaResetWindows(target, source quotaResetWindows) quotaResetWindows 
 }
 
 func (w *quotaResetWindows) observe(provider string, signals map[string]string, now time.Time) {
-	update := func(dst *quotaWindowReset, at time.Time) {
+	update := func(dst *quotaWindowReset, at time.Time, used float64, usedKnown bool) {
 		if !at.IsZero() && !now.Before(dst.observedAt) {
-			*dst = quotaWindowReset{at: at, observedAt: now}
+			*dst = quotaWindowReset{at: at, observedAt: now, used: used, usedKnown: usedKnown}
 		}
+	}
+	fraction := func(raw string, scale float64) (float64, bool) {
+		v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil || v < 0 || v != v {
+			return 0, false
+		}
+		return min(v/scale, 1), true
 	}
 	value := func(name string) string { return signals[http.CanonicalHeaderKey(name)] }
 	unixReset := func(raw string) time.Time {
@@ -45,8 +56,10 @@ func (w *quotaResetWindows) observe(provider string, signals map[string]string, 
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "claude":
-		update(&w.long, unixReset(value("anthropic-ratelimit-unified-7d-reset")))
-		update(&w.short, unixReset(value("anthropic-ratelimit-unified-5h-reset")))
+		longUsed, longKnown := fraction(value("anthropic-ratelimit-unified-7d-utilization"), 1)
+		shortUsed, shortKnown := fraction(value("anthropic-ratelimit-unified-5h-utilization"), 1)
+		update(&w.long, unixReset(value("anthropic-ratelimit-unified-7d-reset")), longUsed, longKnown)
+		update(&w.short, unixReset(value("anthropic-ratelimit-unified-5h-reset")), shortUsed, shortKnown)
 	case "codex":
 		primaryMinutes, _ := strconv.ParseInt(value("x-codex-primary-window-minutes"), 10, 64)
 		secondaryMinutes, _ := strconv.ParseInt(value("x-codex-secondary-window-minutes"), 10, 64)
@@ -69,10 +82,11 @@ func (w *quotaResetWindows) observe(provider string, signals map[string]string, 
 			} else if minutes > 0 {
 				long = minutes > 300
 			}
+			used, usedKnown := fraction(value(prefix+"used-percent"), 100)
 			if long {
-				update(&w.long, at)
+				update(&w.long, at, used, usedKnown)
 			} else {
-				update(&w.short, at)
+				update(&w.short, at, used, usedKnown)
 			}
 		}
 	}

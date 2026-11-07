@@ -79,6 +79,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 		state.strategy = "weighted-round-robin"
 	case "soonest-reset-first":
 		state.strategy = "soonest-reset-first"
+	case "remaining-per-day":
+		state.strategy = "remaining-per-day"
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
@@ -107,6 +109,8 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 		selector = &coreauth.WeightedRoundRobinSelector{}
 	case "soonest-reset-first":
 		selector = &coreauth.SoonestResetFirstSelector{}
+	case "remaining-per-day":
+		selector = &coreauth.RemainingPerDaySelector{}
 	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
 	default:
