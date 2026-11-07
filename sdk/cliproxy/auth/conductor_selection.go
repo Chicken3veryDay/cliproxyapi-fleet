@@ -1051,7 +1051,7 @@ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, ro
 	ctx = withWeightedSelectorStateModel(ctx, selector, routeModel)
 	if !isBuiltInSelector(selector) {
 		switch selector.(type) {
-		case *SessionAffinitySelector, *SoonestResetFirstSelector:
+		case *SessionAffinitySelector, *SoonestResetFirstSelector, *RemainingPerDaySelector:
 		default:
 			return ctx
 		}
