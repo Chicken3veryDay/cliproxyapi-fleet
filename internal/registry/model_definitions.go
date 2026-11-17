@@ -134,6 +134,8 @@ func GetXAIModels() []*ModelInfo {
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models,
+		codex62ModelInfo("gpt-6.2-sol", "GPT-6.2 Sol"),
+		codex62ModelInfo("gpt-6.2-astra", "GPT-6.2 Astra"),
 		codexBuiltinImage15ModelInfo(),
 		codexBuiltinImageModelInfo(),
 		codexBuiltinImage25FlareModelInfo(),
@@ -157,6 +159,20 @@ func normalizeAntigravityCapabilityModelID(modelID string) string {
 		modelID = strings.TrimSpace(modelID[:open])
 	}
 	return modelID
+}
+
+// GPT-6.2 metadata: https://developers.openai.com/api/docs/models/gpt-6.2-sol
+// and https://developers.openai.com/api/docs/models/gpt-6.2-astra.
+func codex62ModelInfo(id, name string) *ModelInfo {
+	return &ModelInfo{
+		ID: id, Object: "model", OwnedBy: "openai", Type: "openai",
+		DisplayName: name, Version: id,
+		ContextLength: 1050000, MaxCompletionTokens: 128000,
+		SupportedParameters:       []string{"tools"},
+		SupportedInputModalities:  []string{"text", "image"},
+		SupportedOutputModalities: []string{"text"},
+		Thinking:                  &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	}
 }
 
 func codexBuiltinImage15ModelInfo() *ModelInfo {

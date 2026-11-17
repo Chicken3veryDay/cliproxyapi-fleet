@@ -462,3 +462,43 @@ func TestGetDevinModelsFallback(t *testing.T) {
 		t.Errorf("info.DisplayName = %q, want SWE-2", info.DisplayName)
 	}
 }
+
+func TestCodex62BuiltinsSurviveStaleCatalog(t *testing.T) {
+	for _, id := range []string{"gpt-6.2-sol", "gpt-6.2-astra"} {
+		models := WithCodexBuiltins([]*ModelInfo{{ID: "existing-model"}, {ID: id, ContextLength: 1}})
+		var found *ModelInfo
+		count := 0
+		for _, model := range models {
+			if model.ID == id {
+				found = model
+				count++
+			}
+		}
+		if count != 1 || found.ContextLength != 1050000 || found.MaxCompletionTokens != 128000 {
+			t.Fatalf("%s missing official limits: %+v (count %d)", id, found, count)
+		}
+		if found.OwnedBy != "openai" || found.Type != "openai" || found.Version != id {
+			t.Fatalf("%s has incorrect provider metadata: %+v", id, found)
+		}
+		if !reflect.DeepEqual(found.SupportedInputModalities, []string{"text", "image"}) || !reflect.DeepEqual(found.SupportedOutputModalities, []string{"text"}) {
+			t.Fatalf("%s has incorrect modalities: %+v", id, found)
+		}
+		if found.Thinking == nil || !reflect.DeepEqual(found.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
+			t.Fatalf("%s has incorrect reasoning levels: %+v", id, found.Thinking)
+		}
+		if models[0].ID != "existing-model" {
+			t.Fatal("existing catalog entry lost")
+		}
+	}
+	for _, getter := range []func() []*ModelInfo{GetCodexFreeModels, GetCodexTeamModels, GetCodexPlusModels, GetCodexProModels} {
+		seen := map[string]bool{}
+		for _, model := range getter() {
+			seen[model.ID] = true
+		}
+		for _, id := range []string{"gpt-6.2-sol", "gpt-6.2-astra"} {
+			if !seen[id] {
+				t.Errorf("Codex tier missing %s", id)
+			}
+		}
+	}
+}
