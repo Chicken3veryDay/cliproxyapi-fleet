@@ -81,6 +81,10 @@ const (
 	blockReasonOther
 )
 
+// usageLimitCooldownThreshold is the shortest cooldown reported to clients as a
+// usage limit (a terminal error) rather than a retryable rate limit.
+const usageLimitCooldownThreshold = 5 * time.Minute
+
 type modelCooldownError struct {
 	model    string
 	resetIn  time.Duration
@@ -148,6 +152,12 @@ func (e *modelCooldownError) Error() string {
 	}
 	if e.provider != "" {
 		errorBody["provider"] = e.provider
+	}
+	if e.resetIn >= usageLimitCooldownThreshold {
+		// Codex retries a 429 after its Retry-After unless error.type is
+		// usage_limit_reached, so a multi-hour cooldown would park the turn for hours.
+		errorBody["type"] = "usage_limit_reached"
+		errorBody["resets_at"] = time.Now().Add(e.resetIn).Unix()
 	}
 	if e.cause != nil {
 		if causeText := ExtractUpstreamErrorSummary(e.cause.Error()); causeText != "" {
