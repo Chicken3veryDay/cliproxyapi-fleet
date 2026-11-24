@@ -1498,3 +1498,85 @@ func TestConfigSynthesizer_EmptyConnectionPoolBlockOptsIn(t *testing.T) {
 		t.Fatalf("keyless OpenAI-compatible entry lost its group connection-pool block: %+v", keylessAuths)
 	}
 }
+
+func TestConfigSynthesizer_PreservesV8APIKeyGroupName(t *testing.T) {
+	raw := []byte(`config-version: 8
+api-keys:
+  claude:
+    - name: anthropic-platform-fallback
+      priority: -1
+      base-url: https://api.anthropic.com
+      headers:
+        Authorization: Bearer token-1
+      keys:
+        - api-key: ""
+    - name: anthropic-platform-fallback-2
+      priority: -1
+      base-url: https://api.anthropic.com
+      headers:
+        Authorization: Bearer token-2
+      keys:
+        - api-key: ""
+  codex:
+    - name: openai-platform-fallback
+      priority: -1
+      base-url: https://api.openai.com/v1
+      keys:
+        - api-key: sk-openai-fallback
+  gemini:
+    - name: gemini-fallback
+      keys:
+        - api-key: sk-gemini
+  vertex:
+    - name: vertex-fallback
+      base-url: https://vertex.example/v1
+      keys:
+        - api-key: sk-vertex
+  openai-compatibility:
+    - name: compat-fallback
+      base-url: https://compat.example/v1
+      keys:
+        - api-key: sk-compat
+`)
+	cfg, err := config.ParseConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("ParseConfigBytes failed: %v", err)
+	}
+	auths, err := NewConfigSynthesizer().Synthesize(&SynthesisContext{
+		Config:      cfg,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	})
+	if err != nil {
+		t.Fatalf("Synthesize failed: %v", err)
+	}
+
+	got := make(map[string]string, len(auths))
+	for _, a := range auths {
+		got[a.APIKeyGroup()] = a.Provider
+	}
+	for group, wantProvider := range map[string]string{
+		"anthropic-platform-fallback":   "claude",
+		"anthropic-platform-fallback-2": "claude",
+		"openai-platform-fallback":      "codex",
+		"gemini-fallback":               "gemini",
+		"vertex-fallback":               "vertex",
+	} {
+		if got[group] != wantProvider {
+			t.Fatalf("group %q provider = %q, want %q (all=%v)", group, got[group], wantProvider, got)
+		}
+	}
+	if _, ok := got["compat-fallback"]; !ok {
+		t.Fatalf("missing compat-fallback group in synthesized auths: %v", got)
+	}
+
+	oauthAuth := &coreauth.Auth{
+		ID:         "oauth-1",
+		Provider:   "claude",
+		Attributes: map[string]string{coreauth.AttributeAPIKeyGroup: "anthropic-platform-fallback"},
+		Metadata:   map[string]any{"access_token": "oauth-token"},
+	}
+	if oauthGroup := oauthAuth.APIKeyGroup(); oauthGroup != "" {
+		t.Fatalf("OAuth auth APIKeyGroup() = %q, want empty", oauthGroup)
+	}
+}

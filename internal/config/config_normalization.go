@@ -385,6 +385,7 @@ func sanitizeMetaKeyEntries(entries []MetaKey) []MetaKey {
 	out := make([]MetaKey, 0, len(entries))
 	for i := range entries {
 		e := entries[i]
+		e.Name = strings.TrimSpace(e.Name)
 		e.APIKey = strings.TrimSpace(e.APIKey)
 		// meta-api-key requires a valid API key. DCA tokens require OAuth storage (auths/*.json).
 		if e.APIKey == "" || strings.HasPrefix(e.APIKey, "dca:") {
@@ -410,6 +411,7 @@ func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
 	out := make([]CodexKey, 0, len(entries))
 	for i := range entries {
 		e := entries[i]
+		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
@@ -531,6 +533,7 @@ func (cfg *Config) SanitizeClaudeKeys() {
 	}
 	for i := range cfg.ClaudeKey {
 		entry := &cfg.ClaudeKey[i]
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
@@ -551,6 +554,7 @@ func sanitizeGeminiKeyEntries(entries []GeminiKey) []GeminiKey {
 	out := entries[:0]
 	for i := range entries {
 		entry := entries[i]
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.APIKey = strings.TrimSpace(entry.APIKey)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		if entry.APIKey == "" && entry.BaseURL == "" {

@@ -446,7 +446,7 @@ func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
 			item := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 			for i := 0; i < len(group.Content); i += 2 {
 				field := group.Content[i].Value
-				if field == "base-url" || sharedKeyFields[field] {
+				if field == "name" || field == "base-url" || sharedKeyFields[field] {
 					setYAMLPath(item, field, group.Content[i+1])
 				}
 			}
@@ -505,8 +505,13 @@ func groupLegacyKeys(keys *yaml.Node, provider string) *yaml.Node {
 			deleteYAMLPath(group, "api-key-entries")
 		} else {
 			group = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			setYAMLPath(group, "name", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: fmt.Sprintf("%s-%d", provider, index+1)})
+			if existingName := yamlPath(entry, "name"); existingName != nil && strings.TrimSpace(existingName.Value) != "" {
+				setYAMLPath(group, "name", existingName)
+			} else {
+				setYAMLPath(group, "name", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: fmt.Sprintf("%s-%d", provider, index+1)})
+			}
 			key := deepCopyNode(entry)
+			deleteYAMLPath(key, "name")
 			for i := 0; i < len(entry.Content); i += 2 {
 				field := entry.Content[i].Value
 				if field == "base-url" || sharedKeyFields[field] {
