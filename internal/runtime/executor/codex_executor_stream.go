@@ -85,7 +85,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, auth))
 	_ = doc.Delete("previous_response_id")
 	_ = doc.Delete("generate")
-	_ = doc.Delete("prompt_cache_retention")
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	_ = doc.Delete("safety_identifier")
 	reasoningSummaryDelivery := doc.Get("stream_options.reasoning_summary_delivery")
 	hasReasoningSummaryDelivery := reasoningSummaryDelivery.Exists()

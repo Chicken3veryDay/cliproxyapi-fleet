@@ -40,11 +40,19 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 		return cliproxyexecutor.Response{}, err
 	}
 
+	_, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
+	if baseURL == "" {
+		baseURL = "https://chatgpt.com/backend-api/codex"
+	}
+	allowPromptCacheRetention := codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers)
+
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	_ = doc.Delete("previous_response_id")
 	helps.StripCodexSessionInstructionMarker(doc, from)
 	_ = doc.Delete("generate")
-	_ = doc.Delete("prompt_cache_retention")
+	if !allowPromptCacheRetention {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	_ = doc.Delete("safety_identifier")
 	_ = doc.Delete("stream_options")
 	helps.SetBoolIfDifferentDoc(doc, "stream", false)
@@ -52,6 +60,9 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth))
 	helps.FinalizePayloadDoc(ctx, doc)
+	if !allowPromptCacheRetention {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	body = doc.Bytes()
 	enc, err := tokenizerForCodexModel(baseModel)
 	if err != nil {

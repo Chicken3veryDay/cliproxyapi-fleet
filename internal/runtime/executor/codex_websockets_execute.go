@@ -85,7 +85,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts, auth))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
-	_ = doc.Delete("prompt_cache_retention")
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	_ = doc.Delete("safety_identifier")
 	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 	if !useSIWC {
@@ -150,6 +152,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, errSession
 	}
 	helps.FinalizePayloadDoc(ctx, doc)
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	body = doc.Bytes()
 	if errMarker := helps.ValidateCodexSessionInstructionMarker(body, from); errMarker != nil {
 		return resp, errMarker

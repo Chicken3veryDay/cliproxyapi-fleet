@@ -1021,6 +1021,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, errSession
 	}
 	helps.FinalizePayloadDoc(ctx, doc)
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	body = doc.Bytes()
 	if errMarker := helps.ValidateCodexSessionInstructionMarker(body, from); errMarker != nil {
 		return nil, errMarker

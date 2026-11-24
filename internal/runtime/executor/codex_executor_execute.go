@@ -164,7 +164,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
 	_ = doc.Delete("previous_response_id")
 	_ = doc.Delete("generate")
-	_ = doc.Delete("prompt_cache_retention")
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	_ = doc.Delete("safety_identifier")
 	_ = doc.Delete("stream_options")
 	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
