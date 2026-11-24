@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -40,15 +41,31 @@ func ApplyPayloadConfigWithRequestDoc(cfg *config.Config, model, protocol, fromP
 	_ = ApplyPayloadConfigWithRequestTrackedDoc(cfg, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, "")
 }
 
+// ApplyPayloadConfigWithRequestForAuthDoc applies payload config in place on doc with serving auth credential context.
+func ApplyPayloadConfigWithRequestForAuthDoc(cfg *config.Config, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header, auth *cliproxyauth.Auth) {
+	_ = ApplyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg, "", model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, auth)
+}
+
 // ApplyPayloadConfigWithRequestForExecutor applies payload config with explicit target executor context.
 func ApplyPayloadConfigWithRequestForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header) []byte {
 	out, _ := ApplyPayloadConfigWithTrackedPathsForExecutor(cfg, targetExecutor, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
 	return out
 }
 
+// ApplyPayloadConfigWithRequestForExecutorAuth applies payload config with explicit target executor and auth credential context.
+func ApplyPayloadConfigWithRequestForExecutorAuth(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, auth *cliproxyauth.Auth) []byte {
+	out, _ := ApplyPayloadConfigWithTrackedPathsForExecutorAuth(cfg, targetExecutor, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, auth)
+	return out
+}
+
 // ApplyPayloadConfigWithRequestForExecutorDoc applies payload config in place on doc with explicit target executor context.
 func ApplyPayloadConfigWithRequestForExecutorDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header) {
 	_ = ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers)
+}
+
+// ApplyPayloadConfigWithRequestForExecutorAuthDoc applies payload config in place on doc with explicit target executor and auth credential context.
+func ApplyPayloadConfigWithRequestForExecutorAuthDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header, auth *cliproxyauth.Auth) {
+	_ = ApplyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, auth)
 }
 
 func isCodexTargetExecutor(targetExecutor string) bool {
@@ -68,16 +85,27 @@ func ApplyPayloadConfigWithTrackedPathsDoc(cfg *config.Config, model, protocol, 
 	return ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, "", model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
 }
 
+// ApplyPayloadConfigWithTrackedPathsForAuthDoc applies payload config in place on doc with auth credential context
+// and reports which tracked paths (or their descendants) were targeted by an applied rule.
+func ApplyPayloadConfigWithTrackedPathsForAuthDoc(cfg *config.Config, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header, auth *cliproxyauth.Auth, trackedPaths ...string) map[string]bool {
+	return ApplyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg, "", model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, auth, trackedPaths...)
+}
+
 // ApplyPayloadConfigWithTrackedPathsForExecutor applies payload config with target executor awareness.
 // When headers indicate a Codex client and the target executor is not Codex or Codex WebSocket,
 // it normalizes tool parameter integer types to satisfy client-side integer deserialization (#6237).
 // For Codex and Codex WebSocket targets, integer normalization is skipped (#6244).
 func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
+	return ApplyPayloadConfigWithTrackedPathsForExecutorAuth(cfg, targetExecutor, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, nil, trackedPaths...)
+}
+
+// ApplyPayloadConfigWithTrackedPathsForExecutorAuth applies payload config with target executor and auth credential awareness.
+func ApplyPayloadConfigWithTrackedPathsForExecutorAuth(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, auth *cliproxyauth.Auth, trackedPaths ...string) ([]byte, map[string]bool) {
 	if len(payload) == 0 {
 		return payload, make(map[string]bool)
 	}
 	doc := ojson.NewDoc(payload)
-	touched, mutated := applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
+	touched, mutated := applyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, auth, trackedPaths...)
 	if !mutated {
 		return payload, touched
 	}
@@ -86,11 +114,16 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 
 // ApplyPayloadConfigWithTrackedPathsForExecutorDoc applies payload config in place on doc with target executor awareness.
 func ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, trackedPaths ...string) map[string]bool {
-	touched, _ := applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
+	return ApplyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, nil, trackedPaths...)
+}
+
+// ApplyPayloadConfigWithTrackedPathsForExecutorAuthDoc applies payload config in place on doc with target executor and auth credential awareness.
+func ApplyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, auth *cliproxyauth.Auth, trackedPaths ...string) map[string]bool {
+	touched, _ := applyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, auth, trackedPaths...)
 	return touched
 }
 
-func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, trackedPaths ...string) (map[string]bool, bool) {
+func applyPayloadConfigWithTrackedPathsForExecutorAuthDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, auth *cliproxyauth.Auth, trackedPaths ...string) (map[string]bool, bool) {
 	touched := make(map[string]bool)
 	if doc == nil || doc.Len() == 0 {
 		return touched, false
@@ -202,7 +235,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply default rules: first write wins per field across all matching rules.
 			for i := range rules.Default {
 				rule := &rules.Default[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, auth, doc, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -230,7 +263,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply default raw rules: first write wins per field across all matching rules.
 			for i := range rules.DefaultRaw {
 				rule := &rules.DefaultRaw[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, auth, doc, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -262,7 +295,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply override rules: last write wins per field across all matching rules.
 			for i := range rules.Override {
 				rule := &rules.Override[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, auth, doc, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -284,7 +317,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply override raw rules: last write wins per field across all matching rules.
 			for i := range rules.OverrideRaw {
 				rule := &rules.OverrideRaw[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, auth, doc, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -310,7 +343,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply filter rules: remove matching paths from payload.
 			for i := range rules.Filter {
 				rule := &rules.Filter[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, auth, doc, root, candidates) {
 					continue
 				}
 				for _, path := range rule.Params {
@@ -386,7 +419,7 @@ func shouldStripImageGeneration(mode config.DisableImageGenerationMode, requestP
 	}
 }
 
-func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, doc *ojson.Doc, root string, models []string) bool {
+func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, auth *cliproxyauth.Auth, doc *ojson.Doc, root string, models []string) bool {
 	if len(rules) == 0 || len(models) == 0 || doc == nil {
 		return false
 	}
@@ -405,12 +438,84 @@ func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string,
 			if !payloadHeadersMatch(headers, entry.Headers) {
 				continue
 			}
+			if !payloadAuthMatches(auth, entry) {
+				continue
+			}
 			if !matchModelPattern(name, model) {
 				continue
 			}
 			if payloadModelRuleConditionsMatchDoc(doc, root, entry) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func payloadAuthMatches(auth *cliproxyauth.Auth, rule config.PayloadModelRule) bool {
+	groupPatterns := collectPayloadPatterns(rule.APIKeyGroup, rule.APIKeyGroups)
+	credPatterns := collectPayloadPatterns(rule.Credential, rule.Credentials)
+	if len(groupPatterns) == 0 && len(credPatterns) == 0 {
+		return true
+	}
+	if auth == nil {
+		return false
+	}
+	if len(groupPatterns) > 0 {
+		group := strings.TrimSpace(auth.APIKeyGroup())
+		if group == "" || !matchAnyPayloadPatternFold(groupPatterns, group) {
+			return false
+		}
+	}
+	if len(credPatterns) > 0 {
+		if !payloadCredentialMatches(auth, credPatterns) {
+			return false
+		}
+	}
+	return true
+}
+
+func payloadCredentialMatches(auth *cliproxyauth.Auth, patterns []string) bool {
+	if auth == nil || len(patterns) == 0 {
+		return false
+	}
+	candidates := [3]string{
+		strings.TrimSpace(auth.ID),
+		strings.TrimSpace(auth.Index),
+		strings.TrimSpace(auth.FileName),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if matchAnyPayloadPatternFold(patterns, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectPayloadPatterns(single string, list []string) []string {
+	var patterns []string
+	if trimmed := strings.TrimSpace(single); trimmed != "" {
+		patterns = append(patterns, trimmed)
+	}
+	for _, item := range list {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			patterns = append(patterns, trimmed)
+		}
+	}
+	return patterns
+}
+
+func matchAnyPayloadPatternFold(patterns []string, value string) bool {
+	valueLower := strings.ToLower(strings.TrimSpace(value))
+	if valueLower == "" {
+		return false
+	}
+	for _, pattern := range patterns {
+		if matchModelPattern(strings.ToLower(pattern), valueLower) {
+			return true
 		}
 	}
 	return false

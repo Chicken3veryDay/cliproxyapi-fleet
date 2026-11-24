@@ -96,7 +96,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		return nil, err
 	}
 
-	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts)
+	finalize := helps.NewPayloadFinalizerForAuth(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts, auth)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
 	e.obfuscateSensitiveWordsDoc(doc)
 	sanitizeAntigravityGeminiRequestSignaturesDoc(baseModel, doc)

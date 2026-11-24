@@ -240,9 +240,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	stripDefaultKimiClaudeCodeAttributionDoc(auth, url, fp.ProfileClaudeCodeCLI, doc)
 	applyClaudePreservedThinkingBindingDoc(doc)
 	// User rules match the fully prepared business body and are applied only once.
-	touchedPayloadPaths := helps.ApplyPayloadConfigWithTrackedPathsDoc(
+	touchedPayloadPaths := helps.ApplyPayloadConfigWithTrackedPathsForAuthDoc(
 		e.cfg, baseModel, to.String(), from.String(), "", doc, stripTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated),
-		helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers,
+		helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers, auth,
 		"diagnostics",
 	)
 	if touchedPayloadPaths["diagnostics"] {

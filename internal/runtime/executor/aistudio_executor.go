@@ -132,7 +132,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	translatedReq, body, err := e.translateRequest(ctx, req, opts, false)
+	translatedReq, body, err := e.translateRequestForAuth(ctx, auth, req, opts, false)
 	if err != nil {
 		return resp, err
 	}
@@ -220,7 +220,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	translatedReq, body, err := e.translateRequest(ctx, req, opts, true)
+	translatedReq, body, err := e.translateRequestForAuth(ctx, auth, req, opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +502,7 @@ func (e *AIStudioExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.A
 	countMetadata["action"] = "countTokens"
 	countReq.Metadata = countMetadata
 
-	_, body, err := e.translateRequest(ctx, countReq, opts, false)
+	_, body, err := e.translateRequestForAuth(ctx, auth, countReq, opts, false)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -567,6 +567,10 @@ type translatedPayload struct {
 }
 
 func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) ([]byte, translatedPayload, error) {
+	return e.translateRequestForAuth(ctx, nil, req, opts, stream)
+}
+
+func (e *AIStudioExecutor) translateRequestForAuth(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) ([]byte, translatedPayload, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	from := opts.SourceFormat
@@ -613,7 +617,7 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 		_ = doc.Delete("tools")
 		_ = doc.Delete("safetySettings")
 	}
-	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestForAuthDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth)
 	payload = doc.Bytes()
 	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
 }

@@ -87,6 +87,10 @@ func (e *XAIExecutor) prepareResponsesRequestDoc(ctx context.Context, req clipro
 	return e.prepareResponsesRequestToDoc(ctx, req, opts, stream, sdktranslator.FormatCodex)
 }
 
+func (e *XAIExecutor) prepareResponsesRequestForAuthDoc(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*xaiPreparedRequest, error) {
+	return e.prepareResponsesRequestToForAuthDoc(ctx, auth, req, opts, stream, sdktranslator.FormatCodex)
+}
+
 func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool, to sdktranslator.Format) (*xaiPreparedRequest, error) {
 	prepared, err := e.prepareResponsesRequestToDoc(ctx, req, opts, stream, to)
 	if err != nil {
@@ -99,6 +103,10 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 }
 
 func (e *XAIExecutor) prepareResponsesRequestToDoc(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool, to sdktranslator.Format) (*xaiPreparedRequest, error) {
+	return e.prepareResponsesRequestToForAuthDoc(ctx, nil, req, opts, stream, to)
+}
+
+func (e *XAIExecutor) prepareResponsesRequestToForAuthDoc(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool, to sdktranslator.Format) (*xaiPreparedRequest, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -126,7 +134,7 @@ func (e *XAIExecutor) prepareResponsesRequestToDoc(ctx context.Context, req clip
 		return nil, err
 	}
 
-	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts)
+	finalizePayload := helps.NewPayloadFinalizerForAuth(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, auth)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", stream)
 	_ = doc.Delete("previous_response_id")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -48,6 +49,12 @@ func (f PayloadFinalizer) FinalizeDoc(doc *ojson.Doc) {
 
 // NewPayloadFinalizer snapshots matching context before built-in request mutations.
 func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) PayloadFinalizer {
+	return NewPayloadFinalizerForAuth(cfg, executor, model, protocol, root, original, req, opts, nil)
+}
+
+// NewPayloadFinalizerForAuth snapshots matching context, including the serving auth credential,
+// before built-in request mutations.
+func NewPayloadFinalizerForAuth(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, auth *cliproxyauth.Auth) PayloadFinalizer {
 	requestedModel := PayloadRequestedModel(opts, req.Model)
 	requestPath := PayloadRequestPath(opts)
 	headers := opts.Headers.Clone()
@@ -61,7 +68,7 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 			key := &body[:1][0]
 			if v, ok := payloadDocProbes.LoadAndDelete(key); ok {
 				if doc, okDoc := v.(*ojson.Doc); okDoc && doc != nil {
-					ApplyPayloadConfigWithRequestForExecutorDoc(cfg, executor, model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers)
+					ApplyPayloadConfigWithRequestForExecutorAuthDoc(cfg, executor, model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers, auth)
 					if formatCallback != nil {
 						formatCallback(strings.Clone(strings.TrimSpace(doc.Get(buildPayloadPath(root, "response_format")).String())))
 					}
@@ -69,7 +76,7 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 				return nil
 			}
 		}
-		out := ApplyPayloadConfigWithRequestForExecutor(cfg, executor, model, protocol, opts.SourceFormat.String(), root, body, source, requestedModel, requestPath, headers)
+		out := ApplyPayloadConfigWithRequestForExecutorAuth(cfg, executor, model, protocol, opts.SourceFormat.String(), root, body, source, requestedModel, requestPath, headers, auth)
 		if formatCallback != nil {
 			formatCallback(strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(out, buildPayloadPath(root, "response_format")).String())))
 		}

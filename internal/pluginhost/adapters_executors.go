@@ -512,7 +512,7 @@ type preparedExecutorCall struct {
 	outputFormat    sdktranslator.Format
 }
 
-func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
+func (a *executorAdapter) prepareExecutorCall(auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
 	inputRequested := executorInputFormat(req, opts)
 	requestedFormat := executorRequestedFormat(req, opts)
 	inputFormat, errInput := a.selectExecutorInputFormat(inputRequested)
@@ -588,7 +588,7 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 			if inputFormat == sdktranslator.FormatAntigravity {
 				root = "request"
 			}
-			finalize := helps.NewPayloadFinalizer(cfg, a.provider, baseModel, inputFormat.String(), root, originalTranslated, req, finalizeOpts)
+			finalize := helps.NewPayloadFinalizerForAuth(cfg, a.provider, baseModel, inputFormat.String(), root, originalTranslated, req, finalizeOpts, auth)
 			helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(context.Background(), finalize), doc)
 		}
 	}
@@ -926,7 +926,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		}
 	}()
 
-	prepared, errPrepare := a.prepareExecutorCall(req, opts)
+	prepared, errPrepare := a.prepareExecutorCall(auth, req, opts)
 	if errPrepare != nil {
 		return coreexecutor.Response{}, errPrepare
 	}
@@ -984,7 +984,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		}
 	}()
 
-	prepared, errPrepare := a.prepareExecutorCall(req, opts)
+	prepared, errPrepare := a.prepareExecutorCall(auth, req, opts)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -1215,7 +1215,7 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 		}
 	}()
 
-	prepared, errPrepare := a.prepareExecutorCall(req, opts)
+	prepared, errPrepare := a.prepareExecutorCall(auth, req, opts)
 	if errPrepare != nil {
 		return coreexecutor.Response{}, errPrepare
 	}

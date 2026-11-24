@@ -287,6 +287,13 @@ requests:
   #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
   #           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
   #           from-protocol: "responses" # restricts the rule to the source protocol, options: openai, responses, gemini, claude
+  #           api-key-group: "anthropic-platform-fallback*" # restricts the rule to an API-key group name (supports "*" wildcards; never matches OAuth)
+  #           api-key-groups: # optional list of API-key group names or "*" wildcard patterns (matches if any pattern matches; never matches OAuth)
+  #             - "anthropic-platform-fallback"
+  #             - "anthropic-platform-fallback-2"
+  #           credential: "claude:apikey:*" # restricts the rule to a credential ID, auth index, or file name (supports "*" wildcards)
+  #           credentials: # optional list of credential IDs, auth indexes, or file names (supports "*" wildcards)
+  #             - "claude:apikey:primary"
   #           headers: # all configured request headers must match; values support "*" wildcards
   #             X-Client-Tier: "tenant-*-region-*"
   #           match: # all payload JSON paths must equal the configured values
