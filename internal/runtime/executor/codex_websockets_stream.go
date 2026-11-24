@@ -942,6 +942,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		applyCodexSIWCWebsocketBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	helps.FinalizePayloadDoc(ctx, doc)
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	body = doc.Bytes()
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, body, opts.Headers)

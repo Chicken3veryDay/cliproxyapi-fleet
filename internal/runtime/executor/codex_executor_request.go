@@ -166,6 +166,9 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	}
 	helps.SanitizeCodexInputItemIDsDoc(doc)
 	helps.FinalizePayloadDoc(ctx, doc)
+	if !codexAllowsPromptCacheRetention(ctx, auth, url, headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	var rawJSON []byte
 	if doc != nil {
 		rawJSON = doc.Bytes()
@@ -478,6 +481,34 @@ func stripCodexSIWCUnsupportedFieldsDoc(doc *ojson.Doc, hasExplicitInstructions 
 		}
 	}
 	return true
+}
+
+// isChatGPTCodexBaseURL reports whether baseURL targets the ChatGPT Codex backend
+// (including empty baseURL, which defaults to https://chatgpt.com/backend-api/codex).
+func isChatGPTCodexBaseURL(baseURL string) bool {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return true
+	}
+	parsed, err := neturl.Parse(trimmed)
+	if err != nil {
+		return true
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host == "" || host == "chatgpt.com" || strings.HasSuffix(host, ".chatgpt.com") || host == "chat.openai.com"
+}
+
+// codexAllowsPromptCacheRetention reports whether auth and baseURL target a non-ChatGPT
+// Codex API-key endpoint (such as https://api.openai.com/v1) that accepts prompt_cache_retention.
+// Every OAuth, SIWC, and ChatGPT-backend path must continue removing prompt_cache_retention.
+func codexAllowsPromptCacheRetention(ctx context.Context, auth *cliproxyauth.Auth, baseURL string, clientHeaders ...http.Header) bool {
+	if auth == nil || !codexAuthUsesAPIKey(auth) {
+		return false
+	}
+	if codexUseSIWCForRequest(ctx, auth, clientHeaders...) {
+		return false
+	}
+	return !isChatGPTCodexBaseURL(baseURL)
 }
 
 func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, ginHeaders http.Header) {

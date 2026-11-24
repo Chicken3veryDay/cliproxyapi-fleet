@@ -74,7 +74,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizerForAuth(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts, auth))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
-	_ = doc.Delete("prompt_cache_retention")
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	_ = doc.Delete("safety_identifier")
 	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 	upstreamModel := baseModel
@@ -120,6 +122,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		applyCodexSIWCWebsocketBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	helps.FinalizePayloadDoc(ctx, doc)
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL, opts.Headers) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	body = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)

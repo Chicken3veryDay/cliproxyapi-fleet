@@ -788,10 +788,16 @@ func (e *CodexExecutor) prepareCodexOpenAIImageDoc(ctx context.Context, auth *cl
 		return nil, errThinking
 	}
 
+	_, baseURL := codexCredsForRequest(ctx, auth)
+	if baseURL == "" {
+		baseURL = "https://chatgpt.com/backend-api/codex"
+	}
 	helps.SetStringIfDifferentDoc(doc, "model", mainModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
 	_ = doc.Delete("previous_response_id")
-	_ = doc.Delete("prompt_cache_retention")
+	if !codexAllowsPromptCacheRetention(ctx, auth, baseURL) {
+		_ = doc.Delete("prompt_cache_retention")
+	}
 	_ = doc.Delete("safety_identifier")
 	_ = doc.Delete("stream_options")
 	normalizeCodexInstructionsDoc(doc)
