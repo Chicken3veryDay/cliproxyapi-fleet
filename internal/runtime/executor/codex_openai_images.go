@@ -112,7 +112,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
-	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", prepared.Body, req, payloadOpts))
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", prepared.Body, req, payloadOpts, auth))
 	httpReq, body, errCache := e.cacheHelperDoc(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, req, doc, auth, opts.Headers)
 	if errCache != nil {
 		return resp, errCache
@@ -222,7 +222,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
-	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", prepared.Body, req, payloadOpts))
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", prepared.Body, req, payloadOpts, auth))
 	httpReq, body, errCache := e.cacheHelperDoc(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, req, doc, auth, opts.Headers)
 	if errCache != nil {
 		return nil, errCache

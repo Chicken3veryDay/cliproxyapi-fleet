@@ -728,6 +728,18 @@ type PayloadModelRule struct {
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
 	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
+	// APIKeyGroup restricts the rule to requests served by an API-key credential whose
+	// group name matches this wildcard pattern (case-insensitive, e.g., "anthropic-platform-fallback*").
+	APIKeyGroup string `yaml:"api-key-group,omitempty" json:"api-key-group,omitempty"`
+	// APIKeyGroups restricts the rule to requests served by an API-key credential whose
+	// group name matches any of these names or wildcard patterns (case-insensitive).
+	APIKeyGroups []string `yaml:"api-key-groups,omitempty" json:"api-key-groups,omitempty"`
+	// Credential restricts the rule to requests served by a credential whose ID, auth index,
+	// or backing file name matches this wildcard pattern (case-insensitive).
+	Credential string `yaml:"credential,omitempty" json:"credential,omitempty"`
+	// Credentials restricts the rule to requests served by a credential whose ID, auth index,
+	// or backing file name matches any of these values or wildcard patterns (case-insensitive).
+	Credentials []string `yaml:"credentials,omitempty" json:"credentials,omitempty"`
 	// Match requires payload JSON paths to equal the configured values.
 	Match []map[string]any `yaml:"match" json:"match"`
 	// NotMatch requires payload JSON paths to not equal the configured values.

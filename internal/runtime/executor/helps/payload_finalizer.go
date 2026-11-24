@@ -58,8 +58,8 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 
 // NewPayloadFinalizerWithSourceModels includes intermediate resolved model IDs
 // when a provider makes a second model selection after alias resolution.
-func NewPayloadFinalizerWithSourceModels(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, sourceModels ...string) PayloadFinalizer {
-	return newPayloadFinalizer(cfg, executor, model, protocol, root, original, req, opts, nil, append([]string(nil), sourceModels...))
+func NewPayloadFinalizerWithSourceModels(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, auth *cliproxyauth.Auth, sourceModels ...string) PayloadFinalizer {
+	return newPayloadFinalizer(cfg, executor, model, protocol, root, original, req, opts, auth, append([]string(nil), sourceModels...))
 }
 
 func newPayloadFinalizer(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, auth *cliproxyauth.Auth, sourceModels []string) PayloadFinalizer {

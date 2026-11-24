@@ -82,7 +82,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, errThinking
 	}
 
-	finalize := helps.NewPayloadFinalizerWithSourceModels(e.cfg, e.Identifier(), selection.ID, "antigravity", "request", prepared.originalTranslated, req, opts, baseModel)
+	finalize := helps.NewPayloadFinalizerWithSourceModels(e.cfg, e.Identifier(), selection.ID, "antigravity", "request", prepared.originalTranslated, req, opts, auth, baseModel)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
 	e.obfuscateSensitiveWordsDoc(doc)
 	sanitizeAntigravityGeminiRequestSignaturesDoc(selection.ID, doc)
@@ -274,7 +274,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		return resp, errThinking
 	}
 
-	finalize := helps.NewPayloadFinalizerWithSourceModels(e.cfg, e.Identifier(), selection.ID, "antigravity", "request", prepared.originalTranslated, req, opts, baseModel)
+	finalize := helps.NewPayloadFinalizerWithSourceModels(e.cfg, e.Identifier(), selection.ID, "antigravity", "request", prepared.originalTranslated, req, opts, auth, baseModel)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
 	e.obfuscateSensitiveWordsDoc(doc)
 	sanitizeAntigravityGeminiRequestSignaturesDoc(selection.ID, doc)

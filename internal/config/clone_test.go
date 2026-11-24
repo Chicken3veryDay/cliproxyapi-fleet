@@ -229,10 +229,14 @@ func sampleCloneRuntimeConfig() *Config {
 		Payload: PayloadConfig{
 			Default: []PayloadRule{{
 				Models: []PayloadModelRule{{
-					Name:    "model-*",
-					Headers: map[string]string{"X-Tier": "gold"},
-					Match:   []map[string]any{{"tier": "gold"}},
-					Exist:   []string{"$.messages"},
+					Name:         "model-*",
+					APIKeyGroup:  "group-*",
+					APIKeyGroups: []string{"group-a", "group-b"},
+					Credential:   "cred-*",
+					Credentials:  []string{"cred-1", "cred-2"},
+					Headers:      map[string]string{"X-Tier": "gold"},
+					Match:        []map[string]any{{"tier": "gold"}},
+					Exist:        []string{"$.messages"},
 				}},
 				Params: map[string]any{
 					"object": map[string]any{"key": "value"},
@@ -254,6 +258,8 @@ func mutateOriginalConfig(cfg *Config) {
 	cfg.OAuthModelAlias["codex"][0].Alias = "mutated-client-model"
 	cfg.OpenAICompatibility[0].Models[0].Thinking.Levels[0] = "mutated-low"
 	cfg.Payload.Default[0].Params["object"].(map[string]any)["key"] = "mutated-value"
+	cfg.Payload.Default[0].Models[0].APIKeyGroups[0] = "mutated-group"
+	cfg.Payload.Default[0].Models[0].Credentials[0] = "mutated-cred"
 	plugin := cfg.Plugins.Configs["sample"]
 	setPluginRawScalar(nil, &plugin.Raw, "mode", "second")
 	cfg.Plugins.Configs["sample"] = plugin
