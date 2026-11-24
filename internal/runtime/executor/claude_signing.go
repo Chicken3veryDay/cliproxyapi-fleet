@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
@@ -629,6 +630,19 @@ func resolveClaudeKeyConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config
 
 	apiKey, baseURL := claudeCreds(auth)
 	if apiKey == "" {
+		if auth.Attributes != nil {
+			if idxStr := strings.TrimSpace(auth.Attributes["config_index"]); idxStr != "" {
+				if idx, err := strconv.Atoi(idxStr); err == nil && idx >= 0 && idx < len(cfg.ClaudeKey) {
+					entry := &cfg.ClaudeKey[idx]
+					if strings.TrimSpace(entry.APIKey) == "" {
+						cfgBase := strings.TrimSpace(entry.BaseURL)
+						if baseURL == "" || cfgBase == "" || strings.EqualFold(cfgBase, baseURL) {
+							return entry
+						}
+					}
+				}
+			}
+		}
 		return nil
 	}
 
