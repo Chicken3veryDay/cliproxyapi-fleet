@@ -151,6 +151,9 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 		if key != "" {
 			attrs["api_key"] = key
 		}
+		if groupName := strings.TrimSpace(entry.Name); groupName != "" {
+			attrs[coreauth.AttributeAPIKeyGroup] = groupName
+		}
 		metadata := map[string]any{}
 		if entry.DisableCooling != nil {
 			metadata["disable_cooling"] = *entry.DisableCooling
@@ -218,6 +221,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		}
 		if key != "" {
 			attrs["api_key"] = key
+		}
+		if groupName := strings.TrimSpace(ck.Name); groupName != "" {
+			attrs[coreauth.AttributeAPIKeyGroup] = groupName
 		}
 		metadata := map[string]any{}
 		if ck.DisableCooling != nil {
@@ -308,6 +314,9 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		}
 		if key != "" {
 			attrs["api_key"] = key
+		}
+		if groupName := strings.TrimSpace(entry.Name); groupName != "" {
+			attrs[coreauth.AttributeAPIKeyGroup] = groupName
 		}
 		metadata := map[string]any{}
 		if entry.DisableCooling != nil {
@@ -411,6 +420,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if key != "" {
 				attrs["api_key"] = key
 			}
+			if groupName := strings.TrimSpace(compat.Name); groupName != "" {
+				attrs[coreauth.AttributeAPIKeyGroup] = groupName
+			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
@@ -461,6 +473,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
+			}
+			if groupName := strings.TrimSpace(compat.Name); groupName != "" {
+				attrs[coreauth.AttributeAPIKeyGroup] = groupName
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
@@ -517,6 +532,9 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		addWeightToAttrs(compat.Weight, attrs)
 		if key != "" {
 			attrs["api_key"] = key
+		}
+		if groupName := strings.TrimSpace(compat.Name); groupName != "" {
+			attrs[coreauth.AttributeAPIKeyGroup] = groupName
 		}
 		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
 			attrs["models_hash"] = hash

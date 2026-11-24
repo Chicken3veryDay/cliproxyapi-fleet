@@ -14,6 +14,7 @@ const (
 	AuthSourcePostgres    = "postgres"
 
 	AttributeAPIKey               = "api_key"
+	AttributeAPIKeyGroup          = "api_key_group"
 	AttributeAuthKind             = "auth_kind"
 	AttributeCodexAlphaSearch     = "codex_alpha_search"
 	AttributeCodexDisableCloaking = "codex_disable_cloaking"
@@ -47,6 +48,18 @@ func (a *Auth) AuthKind() string {
 		return AuthKindOAuth
 	}
 	return ""
+}
+
+// APIKeyGroup returns the configured API-key group name for this credential, if any.
+// OAuth credentials never belong to an API-key group.
+func (a *Auth) APIKeyGroup() string {
+	if a == nil || a.AuthKind() == AuthKindOAuth {
+		return ""
+	}
+	if group := authAttribute(a, AttributeAPIKeyGroup); group != "" {
+		return group
+	}
+	return authAttribute(a, "compat_name")
 }
 
 // AuthSourceKind returns where the Auth entry came from at runtime.

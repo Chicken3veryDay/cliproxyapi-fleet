@@ -249,6 +249,11 @@ openai-compatibility:
 	}
 	// Scope metadata is intentionally added when fields move under oauth.providers.
 	after.OAuthOnlyFields = nil
+	// Migrated legacy entries receive synthetic v8 group names ("codex-1", "codex-2").
+	if len(after.CodexKey) != 2 || after.CodexKey[0].Name != "codex-1" || after.CodexKey[1].Name != "codex-2" {
+		t.Fatalf("migrated codex group names = %+v", after.CodexKey)
+	}
+	after.CodexKey[0].Name, after.CodexKey[1].Name = "", ""
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("migration changed effective config")
 	}
@@ -796,6 +801,10 @@ api-keys:
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(after.CodexKey) != 2 || after.CodexKey[0].Name != "codex-1" || after.CodexKey[1].Name != "codex-2" {
+		t.Fatalf("migrated codex group names = %+v", after.CodexKey)
+	}
+	after.CodexKey[0].Name, after.CodexKey[1].Name = "", ""
 	if !reflect.DeepEqual(before, after) || len(after.CodexKey) != 2 || len(after.GeminiKey) != 2 {
 		t.Fatal("alias migration changed effective credentials")
 	}
