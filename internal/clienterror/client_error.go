@@ -400,6 +400,19 @@ func IsCredentialBillingExhausted(status int, err error) bool {
 	return billingMessageMatches(err, isNoCreditsRemainingMessage)
 }
 
+// InferCredentialBillingStatus identifies a billing status for a failure event
+// whose upstream payload did not carry a status code.
+func InferCredentialBillingStatus(err error) int {
+	switch {
+	case IsCreditBalanceTooLow(http.StatusBadRequest, err):
+		return http.StatusBadRequest
+	case IsCredentialBillingExhausted(http.StatusTooManyRequests, err):
+		return http.StatusTooManyRequests
+	default:
+		return 0
+	}
+}
+
 func billingErrorBody(err error) string {
 	type responseBodyProvider interface {
 		ResponseBody() []byte

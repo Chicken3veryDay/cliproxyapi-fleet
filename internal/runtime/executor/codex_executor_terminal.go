@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
@@ -184,6 +185,10 @@ func codexTerminalFailureStatus(body []byte) int {
 		if status := int(ojson.GetBytesNoCopy(body, path).Int()); status >= 400 && status <= 599 {
 			return status
 		}
+	}
+
+	if status := clienterror.InferCredentialBillingStatus(statusErr{msg: string(body)}); status != 0 {
+		return status
 	}
 
 	errorType := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, "error.type").String()))

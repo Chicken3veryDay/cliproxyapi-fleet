@@ -100,6 +100,11 @@ func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
 		return doc.Bytes()
 	}
 
+	if topLevel := codexTerminalTopLevelErrorBody(payload); len(topLevel) > 0 {
+		_ = doc.SetRaw("error", ojson.GetBytesNoCopy(topLevel, "error").Raw)
+		return doc.Bytes()
+	}
+
 	_ = doc.Set("error.type", "server_error")
 	_ = doc.Set("error.message", http.StatusText(status))
 	return doc.Bytes()
