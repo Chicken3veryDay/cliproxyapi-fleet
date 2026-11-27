@@ -106,10 +106,8 @@ func IsRequestFault(status int, err error) bool {
 	if IsDevinRequestPermissionDenied(status, err) {
 		return true
 	}
-	// Anthropic reports an exhausted API credit balance as 400 with an
-	// invalid_request_error body. Preserve credential cooldown and rotation
-	// without weakening generic 400 request-fault handling.
-	if IsCreditBalanceTooLow(status, err) {
+	// A billing rejection is specific to the selected credential.
+	if IsCredentialBillingExhausted(status, err) {
 		return false
 	}
 	// Model not found indicates a credential-model capability mismatch rather than
@@ -381,28 +379,53 @@ func IsCreditBalanceTooLow(status int, err error) bool {
 	return hasCreditBalanceTooLowBody(err)
 }
 
-func hasCreditBalanceTooLowBody(err error) bool {
-	if err == nil {
+// IsCredentialBillingExhausted identifies upstream API credit or billing quota failures.
+func IsCredentialBillingExhausted(status int, err error) bool {
+	if status <= 0 && err != nil {
+		status = HTTPStatusFromError(err)
+	}
+	if IsCreditBalanceTooLow(status, err) {
+		return true
+	}
+	if err == nil || (status != http.StatusBadRequest && status != http.StatusTooManyRequests) {
 		return false
 	}
-	body := strings.TrimSpace(err.Error())
+	body := billingErrorBody(err)
+	for _, path := range []string{"error.code", "error.type", "code", "type", "response.error.code", "response.error.type", "body.error.code", "body.error.type"} {
+		if strings.EqualFold(strings.TrimSpace(ojson.Get(body, path).String()), "insufficient_quota") {
+			return true
+		}
+	}
+	return false
+}
+
+func billingErrorBody(err error) string {
 	type responseBodyProvider interface {
 		ResponseBody() []byte
 	}
 	var responseBody responseBodyProvider
 	if errors.As(err, &responseBody) && responseBody != nil && len(responseBody.ResponseBody()) > 0 {
-		body = strings.TrimSpace(string(responseBody.ResponseBody()))
+		return strings.TrimSpace(string(responseBody.ResponseBody()))
 	}
-	if body == "" || !ojson.Valid(body) {
-		return false
+	return strings.TrimSpace(err.Error())
+}
+
+func hasCreditBalanceTooLowBody(err error) bool {
+	body := billingErrorBody(err)
+	if !ojson.Valid(body) {
+		return isCreditBalanceTooLowMessage(body)
 	}
 	for _, path := range []string{"error.message", "message", "response.error.message", "body.error.message"} {
-		msg := strings.ToLower(strings.TrimSpace(ojson.Get(body, path).String()))
-		if strings.HasPrefix(msg, "your credit balance is too low") {
+		if isCreditBalanceTooLowMessage(ojson.Get(body, path).String()) {
 			return true
 		}
 	}
 	return false
+}
+
+func isCreditBalanceTooLowMessage(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "your credit balance is too low") || strings.HasPrefix(message, "credit balance is too low")
 }
 
 func hasModelNotFoundErrorBody(err error) bool {

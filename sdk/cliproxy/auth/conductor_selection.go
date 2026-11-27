@@ -84,9 +84,10 @@ type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
 
 type authSelectionEligibility struct {
-	requiredKind     string
-	credentialPolicy string
-	disallowFreeAuth bool
+	requiredKind           string
+	credentialPolicy       string
+	disallowFreeAuth       bool
+	claudeSubscriptionOnly bool
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -109,6 +110,7 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
+		eligibility.claudeSubscriptionOnly, _ = ctx.Value(claudeSubscriptionOnlyKey{}).(bool)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
 	}
 	return eligibility
@@ -116,6 +118,9 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
+		return false
+	}
+	if e.claudeSubscriptionOnly && !isClaudeSubscriptionTier(auth) {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
@@ -1166,7 +1171,7 @@ func effectiveRequestRetryLimit(auth *Auth, defaultRetry int) int {
 	return defaultRetry
 }
 
-func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetry int) map[string]struct{} {
+func (m *Manager) requestRetryRoundExclusions(retryRound, paidRetryRound, defaultRequestRetry int) map[string]struct{} {
 	excluded := make(map[string]struct{})
 	if m == nil || retryRound <= 0 {
 		return excluded
@@ -1180,7 +1185,11 @@ func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetr
 		if auth == nil || strings.TrimSpace(auth.ID) == "" {
 			continue
 		}
-		if effectiveRequestRetryLimit(auth, defaultRequestRetry) < retryRound {
+		round := retryRound
+		if paidRetryRound != retryRound && isPaidClaudeFallback(auth) {
+			round = paidRetryRound
+		}
+		if effectiveRequestRetryLimit(auth, defaultRequestRetry) < round {
 			excluded[auth.ID] = struct{}{}
 		}
 	}
@@ -1467,6 +1476,9 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
+	}
+	if retry, ok := err.(*claudeSubscriptionRetryError); ok {
+		return retry.wait, true
 	}
 	var homeBusy *HomeConcurrencyBusyError
 	if errors.As(err, &homeBusy) && homeBusy != nil {

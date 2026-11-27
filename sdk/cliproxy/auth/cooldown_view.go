@@ -132,7 +132,7 @@ func cooldownErrorReason(err *Error) string {
 		return "cloudflare_challenge"
 	case isInvalidGrantResultError(err):
 		return "invalid_grant"
-	case isCreditBalanceTooLowResultError(err):
+	case isCredentialBillingExhaustedResultError(err):
 		return "payment_required"
 	case isTransientRateLimitResultError(err):
 		return "transient_rate_limit"

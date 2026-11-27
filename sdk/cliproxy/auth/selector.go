@@ -105,6 +105,9 @@ func newModelCooldownErrorWithCause(model, provider string, resetIn time.Duratio
 	if resetIn < 0 {
 		resetIn = 0
 	}
+	if isCredentialBillingExhaustedError(cause) {
+		cause = nil
+	}
 	return &modelCooldownError{
 		model:    model,
 		provider: provider,
@@ -987,7 +990,7 @@ func shouldRebindSessionAffinityOnError(err *Error) bool {
 	if err == nil || shouldSkipCredentialCooldown(err) {
 		return false
 	}
-	if isModelSupportResultError(err) || isCloudflareChallengeResultError(err) || isInvalidGrantResultError(err) || isCreditBalanceTooLowResultError(err) {
+	if isModelSupportResultError(err) || isCloudflareChallengeResultError(err) || isInvalidGrantResultError(err) || isCredentialBillingExhaustedResultError(err) {
 		return true
 	}
 	switch statusCodeFromResult(err) {
@@ -1117,15 +1120,34 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 	return cliproxysession.NewInMemorySessionTreeStore(0, time.Hour)
 }
 
+// A paid Claude binding remains eligible only while no subscription is available.
+func preferClaudeSubscriptions(available []*Auth) []*Auth {
+	hasSubscription := false
+	hasPaid := false
+	for _, auth := range available {
+		hasPaid = hasPaid || isPaidClaudeFallback(auth)
+		hasSubscription = hasSubscription || isClaudeSubscriptionTier(auth)
+	}
+	if !hasSubscription || !hasPaid {
+		return available
+	}
+	preferred := make([]*Auth, 0, len(available))
+	for _, auth := range available {
+		if !isPaidClaudeFallback(auth) {
+			preferred = append(preferred, auth)
+		}
+	}
+	return preferred
+}
+
 // Pick selects an auth with session affinity when possible.
 // Explicit Claude Code, Codex, OpenCode, pi, and request-body session signals
 // are absolute authority. Requests without those signals use the Merkle LCP
 // matcher before retaining the legacy derived/hash fallback behavior.
 //
-// An established binding outranks credential priority: a bound credential that is still
-// available is reused even when a higher-priority credential recovers. Credential priority
-// applies to cold bindings, requests without a session, and genuine bound-credential
-// failover, so the fallback selector only ever receives the highest available priority tier.
+// An established binding normally outranks credential priority. A usable Claude
+// subscription outranks a paid Claude binding. New bindings and failover use the
+// highest available priority tier.
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
@@ -1187,12 +1209,12 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 	}
 
-	// A single availability pass serves both lookups: the bound credential is validated against
-	// every priority tier, while the fallback selector keeps seeing only the highest tier.
+	// Use the same availability pass for the bound credential and for failover.
 	available, err := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
+	available = preferClaudeSubscriptions(available)
 	fallbackAuths := highestPriorityAuths(available)
 
 	modelKey := canonicalModelKey(model)
@@ -1220,6 +1242,9 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		bindingProvider := canonicalSchedulingProvider(provider)
 		for _, candidate := range auths {
 			if candidate != nil && candidate.ID == authID {
+				if temporaryPaidClaudeSelection(ctx, candidate) {
+					return
+				}
 				if candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate)); candidateProvider != "" {
 					bindingProvider = candidateProvider
 				}
@@ -1357,6 +1382,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		return nil, true, errAvailable
 	}
 
+	available = preferClaudeSubscriptions(available)
 	var preservedAuthID string
 	if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok {
 		for _, auth := range available {
@@ -1411,6 +1437,9 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 	if auth == nil {
 		return nil, true, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	if temporaryPaidClaudeSelection(ctx, auth) {
+		return auth, true, nil
 	}
 	bindAuthID := auth.ID
 	if preservedAuthID != "" {

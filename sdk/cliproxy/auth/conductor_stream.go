@@ -439,6 +439,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		executionSeq := m.nextExecutionSeq()
 		startStream := time.Now()
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+		errStream = normalizeClaudeSubscriptionTransport(ctx, auth, errStream)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
@@ -461,6 +462,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					errStream = normalizeClaudeSubscriptionTransport(ctx, auth, errStream)
 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 					if hasUpstreamExecutionAttempt(errStream) {
 						upstreamErr = errStream
@@ -488,6 +490,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		streamResult, errStream = validateStreamResult(streamResult, errStream)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if errStream != nil {
+			subscriptionRetryFromContext(ctx).observeFailure(ctx, auth, errStream)
 			rerr := resultErrorFromError(errStream)
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
@@ -542,6 +545,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					errStream = normalizeClaudeSubscriptionTransport(ctx, auth, errStream)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)

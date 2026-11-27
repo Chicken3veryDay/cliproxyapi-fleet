@@ -93,14 +93,29 @@ func unwrapUpstreamExecutionAttempt(err error) error {
 
 func unwrapExecutionBoundaryError(err error) error {
 	err = unwrapRequestStopError(err)
-	return unwrapUpstreamExecutionAttempt(err)
+	err = unwrapUpstreamExecutionAttempt(err)
+	if retry, ok := err.(*claudeSubscriptionRetryError); ok {
+		err = unwrapUpstreamExecutionAttempt(retry.cause)
+	}
+	if isCredentialBillingExhaustedError(err) {
+		return &Error{Code: "auth_unavailable", Message: "upstream credentials are unavailable", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	return err
+}
+
+// Keep an earlier upstream failure when a later credential rejects the request for billing.
+func preferNonBillingAttemptError(previous, current error) error {
+	if previous != nil && isCredentialBillingExhaustedError(current) {
+		return previous
+	}
+	return current
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
 	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
 		return fallback
 	}
-	if upstream == nil {
+	if upstream == nil || (fallback != nil && isCredentialBillingExhaustedError(upstream) && !isCredentialBillingExhaustedError(fallback)) {
 		return fallback
 	}
 	var exhausted *homeRetryRoundExhaustedError
@@ -138,6 +153,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	ctx = withClaudeSubscriptionRetry(ctx, normalized)
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -154,7 +170,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
-			preferredUpstreamErr = errExec
+			preferredUpstreamErr = preferNonBillingAttemptError(preferredUpstreamErr, errExec)
 		}
 		lastErr = errExec
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, normalized, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
@@ -200,6 +216,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	ctx = withClaudeSubscriptionRetry(ctx, normalized)
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -216,7 +233,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
-			preferredUpstreamErr = errExec
+			preferredUpstreamErr = preferNonBillingAttemptError(preferredUpstreamErr, errExec)
 		}
 		lastErr = errExec
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, normalized, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
@@ -256,6 +273,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
+	if !m.HomeEnabled() {
+		ctx = withClaudeSubscriptionRetry(ctx, normalized)
+	}
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -273,7 +293,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			return result, nil
 		}
 		if hasUpstreamExecutionAttempt(errStream) {
-			preferredUpstreamErr = errStream
+			preferredUpstreamErr = preferNonBillingAttemptError(preferredUpstreamErr, errStream)
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
@@ -511,7 +531,7 @@ func syncPreferredUpstreamError(upstreamErr *error, errExec error) {
 		}
 		return
 	}
-	*upstreamErr = errExec
+	*upstreamErr = preferNonBillingAttemptError(*upstreamErr, errExec)
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
@@ -523,9 +543,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
+	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry.paidRetryRound(retryRound), defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -546,8 +567,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		if errPick != nil {
+			if _, retry := errPick.(*claudeSubscriptionRetryError); retry {
+				return cliproxyexecutor.Response{}, errPick
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -585,7 +609,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, AccessToken: authAccessTokenForRequest(execCtx, auth, pickOpts.Headers), CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
 			m.MarkResult(execCtx, result)
-			lastErr = errPrepare
+			subscriptionRetry.observeFailure(execCtx, auth, errPrepare)
+			lastErr = preferNonBillingAttemptError(lastErr, errPrepare)
 			continue
 		}
 		executor = executorForAuth(executor, auth)
@@ -630,11 +655,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
-					upstreamErr = errExec
+					upstreamErr = preferNonBillingAttemptError(upstreamErr, errExec)
 				}
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
@@ -648,11 +674,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
-							upstreamErr = errExec
+							upstreamErr = preferNonBillingAttemptError(upstreamErr, errExec)
 						}
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
@@ -709,12 +736,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			return resp, nil
 		}
 		if authErr != nil {
+			subscriptionRetry.observeFailure(execCtx, auth, authErr)
 			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return cliproxyexecutor.Response{}, wrapRequestStopError(authErr)
 				}
-				lastErr = authErr
+				lastErr = preferNonBillingAttemptError(lastErr, authErr)
 				if homeMode {
 					homeAuthCount++
 				}
@@ -723,7 +751,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
-			lastErr = authErr
+			lastErr = preferNonBillingAttemptError(lastErr, authErr)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -741,9 +769,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
+	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry.paidRetryRound(retryRound), defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -764,8 +793,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		if errPick != nil {
+			if _, retry := errPick.(*claudeSubscriptionRetryError); retry {
+				return cliproxyexecutor.Response{}, errPick
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -803,7 +835,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true, AccessToken: authAccessTokenForRequest(execCtx, auth, pickOpts.Headers), CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
 			m.MarkResult(execCtx, result)
-			lastErr = errPrepare
+			subscriptionRetry.observeFailure(execCtx, auth, errPrepare)
+			lastErr = preferNonBillingAttemptError(lastErr, errPrepare)
 			continue
 		}
 		executor = executorForAuth(executor, auth)
@@ -848,11 +881,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
+			errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
-					upstreamErr = errExec
+					upstreamErr = preferNonBillingAttemptError(upstreamErr, errExec)
 				}
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
@@ -866,11 +900,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
-							upstreamErr = errExec
+							upstreamErr = preferNonBillingAttemptError(upstreamErr, errExec)
 						}
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
@@ -932,12 +967,13 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			return resp, nil
 		}
 		if authErr != nil {
+			subscriptionRetry.observeFailure(execCtx, auth, authErr)
 			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return cliproxyexecutor.Response{}, wrapRequestStopError(authErr)
 				}
-				lastErr = authErr
+				lastErr = preferNonBillingAttemptError(lastErr, authErr)
 				if homeMode {
 					homeAuthCount++
 				}
@@ -946,7 +982,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
-			lastErr = authErr
+			lastErr = preferNonBillingAttemptError(lastErr, authErr)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -965,9 +1001,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
+	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry.paidRetryRound(retryRound), defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1012,9 +1049,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+			auth, executor, provider, errPick = m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		}
 		if errPick != nil {
+			if _, retry := errPick.(*claudeSubscriptionRetryError); retry {
+				return nil, errPick
+			}
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if homeMode && lastErr != nil && errors.As(errPick, &homeCooldown) && homeCooldown != nil {
@@ -1231,7 +1271,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
 		if errStream != nil {
 			if hasUpstreamExecutionAttempt(errStream) {
-				upstreamErr = errStream
+				upstreamErr = preferNonBillingAttemptError(upstreamErr, errStream)
 			}
 			if selection != nil {
 				excludeAuth := shouldExcludeHomeAuthAfterStreamError(execCtx, auth, errStream)
@@ -1258,7 +1298,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				if isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(errStream)
 				}
-				lastErr = errStream
+				lastErr = preferNonBillingAttemptError(lastErr, errStream)
 				if homeMode {
 					roundTiming.Observe(lastErr)
 				}
@@ -1270,7 +1310,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
-			lastErr = errStream
+			lastErr = preferNonBillingAttemptError(lastErr, errStream)
 			if homeMode {
 				roundTiming.Observe(lastErr)
 			}
