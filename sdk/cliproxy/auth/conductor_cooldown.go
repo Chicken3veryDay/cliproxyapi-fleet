@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"golang.org/x/net/http2"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -2176,7 +2177,18 @@ func isTransientTransportError(err error) bool {
 	if errors.As(err, &opErr) && opErr != nil {
 		return true
 	}
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		return isPeerProtocolReset(streamErr)
+	}
 	return isTransientTransportMessage(err.Error())
+}
+
+// isPeerProtocolReset reports an HTTP/2 PROTOCOL_ERROR reset the server sent
+// for the request stream, e.g. chatgpt.com's. The transport raises the same
+// code locally for a malformed response, which is not transient.
+func isPeerProtocolReset(err http2.StreamError) bool {
+	return err.Code == http2.ErrCodeProtocol && err.Cause != nil && err.Cause.Error() == "received from peer"
 }
 
 func isTransientTransportResultError(err *Error) bool {
@@ -2238,8 +2250,8 @@ func isTransientTransportMessage(message string) bool {
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "unexpected eof"),
 		isHTTP2ClosedConnectionMessage(lower),
-		// An HTTP/2 peer reset of the request stream, e.g. chatgpt.com's PROTOCOL_ERROR.
-		strings.Contains(lower, "stream error: stream id") && strings.Contains(lower, "protocol_error"):
+		// The text form of isPeerProtocolReset, for transports with their own HTTP/2 errors.
+		strings.Contains(lower, "stream error: stream id") && strings.Contains(lower, "; protocol_error; received from peer"):
 		return true
 	default:
 		return false
