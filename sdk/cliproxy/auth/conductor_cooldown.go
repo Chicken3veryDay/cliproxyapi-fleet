@@ -1438,7 +1438,7 @@ func (m *Manager) updateSessionAffinity(ctx context.Context, result Result, auth
 		return
 	}
 	sel := m.Selector()
-	if _, ok := sel.(*SessionAffinitySelector); ok && temporaryPaidClaudeSelection(ctx, auth) {
+	if _, ok := sel.(*SessionAffinitySelector); ok && temporaryPaidSelection(ctx, auth) {
 		return
 	}
 	if affinity, ok := sel.(interface {
@@ -2237,7 +2237,9 @@ func isTransientTransportMessage(message string) bool {
 		strings.Contains(lower, "connection aborted"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "unexpected eof"),
-		isHTTP2ClosedConnectionMessage(lower):
+		isHTTP2ClosedConnectionMessage(lower),
+		// An HTTP/2 peer reset of the request stream, e.g. chatgpt.com's PROTOCOL_ERROR.
+		strings.Contains(lower, "stream error: stream id") && strings.Contains(lower, "protocol_error"):
 		return true
 	default:
 		return false

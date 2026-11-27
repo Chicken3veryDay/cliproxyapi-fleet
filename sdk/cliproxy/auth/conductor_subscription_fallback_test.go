@@ -2,13 +2,16 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -111,6 +114,86 @@ func TestHubSubscriptionBeforePaid(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+// Codex subscription failures seen on the hub before any HTTP response.
+func codexTransportFailures() map[string]error {
+	post := func(err error) error {
+		return &url.Error{Op: "Post", URL: "https://chatgpt.com/backend-api/codex/responses", Err: err}
+	}
+	return map[string]error{
+		"protocol error":      post(errors.New("stream error: stream ID 1; PROTOCOL_ERROR; received from peer")),
+		"handshake reset":     post(fmt.Errorf("utls: TLS handshake: %w", &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET})),
+		"network unreachable": post(fmt.Errorf("utls: dial upstream: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)})),
+		"handshake eof":       post(fmt.Errorf("utls: TLS handshake: %w", io.EOF)),
+	}
+}
+
+func TestHubCodexSubscriptionBeforePaid(t *testing.T) {
+	const noCredits = "You have no credits remaining. Add credits to continue."
+	billing := &Error{HTTPStatus: http.StatusTooManyRequests, Message: `{"error":{"message":"` + noCredits + `","type":"insufficient_quota","code":"insufficient_quota"}}`}
+	for _, operation := range []string{"execute", "stream", "count"} {
+		t.Run(operation, func(t *testing.T) {
+			for name, failure := range codexTransportFailures() {
+				t.Run(name+"/retry subscription", func(t *testing.T) {
+					_, executor, call := newHubFallbackTest(t, operation, "codex", 1, "sub", "paid")
+					executor.failures["sub"] = []error{failure}
+					executor.failures["paid"] = []error{billing}
+					if err := call(); err != nil {
+						t.Fatal(err)
+					}
+					assertHubAuthCalls(t, executor, "sub", "sub")
+				})
+			}
+			t.Run("billing error stays hidden", func(t *testing.T) {
+				failure := codexTransportFailures()["protocol error"]
+				m, executor, call := newHubFallbackTest(t, operation, "codex", 1, "sub", "paid")
+				executor.failures["sub"] = []error{failure, failure}
+				executor.failures["paid"] = []error{billing}
+				err := call()
+				if err == nil || strings.Contains(err.Error(), noCredits) || strings.Contains(err.Error(), "insufficient_quota") {
+					t.Fatalf("terminal error = %v, want the subscription's error", err)
+				}
+				assertHubAuthCalls(t, executor, "sub", "sub", "paid")
+				if paid, _ := m.GetByID(executor.authIDs["paid"]); !paid.Quota.Exceeded {
+					t.Fatalf("paid key not cooled after billing exhaustion: %+v", paid.Quota)
+				}
+				if bound, _ := m.LookupSessionAffinity("codex", executor.model, hubFallbackSessionID); bound != nil && bound.ID == executor.authIDs["paid"] {
+					t.Fatal("session bound to the paid key")
+				}
+			})
+			t.Run("override a cached paid binding", func(t *testing.T) {
+				m, executor, call := newHubFallbackTest(t, operation, "codex", 0, "sub", "paid")
+				selector := m.Selector().(*SessionAffinitySelector)
+				selector.cache.SetAliases(executor.authIDs["paid"], "mixed::claude:"+hubFallbackSessionID+"::"+canonicalModelKey(executor.model))
+				if bound, _ := m.LookupSessionAffinity("codex", executor.model, hubFallbackSessionID); bound == nil || bound.ID != executor.authIDs["paid"] {
+					t.Fatal("test setup did not bind the session to the paid key")
+				}
+				if err := call(); err != nil {
+					t.Fatal(err)
+				}
+				assertHubAuthCalls(t, executor, "sub")
+				if bound, _ := m.LookupSessionAffinity("codex", executor.model, hubFallbackSessionID); bound == nil || bound.ID != executor.authIDs["sub"] {
+					t.Fatalf("session binding = %v, want the subscription", bound)
+				}
+			})
+			t.Run("paid serves while subscriptions cool down", func(t *testing.T) {
+				quota := &Error{HTTPStatus: http.StatusTooManyRequests, Message: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`}
+				_, executor, call := newHubFallbackTest(t, operation, "codex", 1, "sub", "sub-peer", "paid")
+				executor.failures["sub"] = []error{quota}
+				executor.failures["sub-peer"] = []error{quota}
+				if err := call(); err != nil {
+					t.Fatal(err)
+				}
+				if err := call(); err != nil {
+					t.Fatal(err)
+				}
+				if got := executor.calls; len(got) != 4 || got[2] != "paid" || got[3] != "paid" {
+					t.Fatalf("credential calls = %v, want both subscriptions then the paid key twice", got)
+				}
+			})
 		})
 	}
 }

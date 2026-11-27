@@ -94,7 +94,7 @@ func unwrapUpstreamExecutionAttempt(err error) error {
 func unwrapExecutionBoundaryError(err error) error {
 	err = unwrapRequestStopError(err)
 	err = unwrapUpstreamExecutionAttempt(err)
-	if retry, ok := err.(*claudeSubscriptionRetryError); ok {
+	if retry, ok := err.(*subscriptionRetryError); ok {
 		err = unwrapUpstreamExecutionAttempt(retry.cause)
 	}
 	if isCredentialBillingExhaustedError(err) {
@@ -153,7 +153,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
-	ctx = withClaudeSubscriptionRetry(ctx, normalized)
+	ctx = m.withSubscriptionRetry(ctx, normalized)
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -216,7 +216,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
-	ctx = withClaudeSubscriptionRetry(ctx, normalized)
+	ctx = m.withSubscriptionRetry(ctx, normalized)
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -274,7 +274,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 
 	if !m.HomeEnabled() {
-		ctx = withClaudeSubscriptionRetry(ctx, normalized)
+		ctx = m.withSubscriptionRetry(ctx, normalized)
 	}
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
@@ -569,7 +569,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		if errPick != nil {
-			if _, retry := errPick.(*claudeSubscriptionRetryError); retry {
+			if _, retry := errPick.(*subscriptionRetryError); retry {
 				return cliproxyexecutor.Response{}, errPick
 			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
@@ -655,7 +655,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
-			errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
+			errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -674,7 +674,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
-					errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
+					errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -795,7 +795,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		auth, executor, provider, errPick := m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		if errPick != nil {
-			if _, retry := errPick.(*claudeSubscriptionRetryError); retry {
+			if _, retry := errPick.(*subscriptionRetryError); retry {
 				return cliproxyexecutor.Response{}, errPick
 			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
@@ -881,7 +881,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
-			errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
+			errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -900,7 +900,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
-					errExec = normalizeClaudeSubscriptionTransport(execCtx, auth, errExec)
+					errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1052,7 +1052,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			auth, executor, provider, errPick = m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		}
 		if errPick != nil {
-			if _, retry := errPick.(*claudeSubscriptionRetryError); retry {
+			if _, retry := errPick.(*subscriptionRetryError); retry {
 				return nil, errPick
 			}
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
