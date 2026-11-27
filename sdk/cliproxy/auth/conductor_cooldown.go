@@ -2104,6 +2104,9 @@ func isConnectionLifecycleResultError(err *Error) bool {
 }
 
 func isConnectionLifecycleMessage(message string) bool {
+	if _, ok := http2StreamErrorDetails(message); ok {
+		return false
+	}
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if lower == "" {
 		return false
@@ -2226,7 +2229,21 @@ func isTransientSyscallError(err error) bool {
 	}
 }
 
+// http2StreamErrorDetails separates a stream reset code and cause from its
+// stream ID and any wrapping error prefix.
+func http2StreamErrorDetails(message string) (string, bool) {
+	_, streamError, ok := strings.Cut(strings.TrimSpace(message), "stream error: stream ID ")
+	if !ok {
+		return "", false
+	}
+	_, details, _ := strings.Cut(streamError, "; ")
+	return details, true
+}
+
 func isTransientTransportMessage(message string) bool {
+	if details, ok := http2StreamErrorDetails(message); ok {
+		return details == "PROTOCOL_ERROR; received from peer"
+	}
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if lower == "" {
 		return false
@@ -2249,9 +2266,7 @@ func isTransientTransportMessage(message string) bool {
 		strings.Contains(lower, "connection aborted"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "unexpected eof"),
-		isHTTP2ClosedConnectionMessage(lower),
-		// The text form of isPeerProtocolReset, for transports with their own HTTP/2 errors.
-		strings.Contains(lower, "stream error: stream id") && strings.Contains(lower, "; protocol_error; received from peer"):
+		isHTTP2ClosedConnectionMessage(lower):
 		return true
 	default:
 		return false

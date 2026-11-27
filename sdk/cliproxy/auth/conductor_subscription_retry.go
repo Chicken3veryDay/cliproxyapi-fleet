@@ -4,26 +4,17 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 // isSubscriptionTier reports an OAuth subscription credential. It serves ahead
 // of its provider's paid fallback keys.
 func isSubscriptionTier(auth *Auth) bool {
-	if auth == nil || authPriority(auth) < 0 {
-		return false
-	}
-	switch auth.AuthKind() {
-	case AuthKindOAuth:
-		return true
-	case AuthKindAPIKey:
-		return false
-	default:
-		return auth.AuthSourceKind() == AuthSourceFile
-	}
+	return auth != nil && authPriority(auth) >= 0 && auth.AuthKind() == AuthKindOAuth
 }
 
 // isPaidKey reports a priority -1 API key. It is a paid fallback only for a
@@ -54,9 +45,11 @@ type deferPaidKey struct{}
 // subscriptionRetryState belongs to one execution, across all of its retry rounds.
 type subscriptionRetryState struct {
 	// paidProviders are the requested providers with both a subscription and a paid key.
-	paidProviders  map[string]struct{}
-	transportErr   error
-	deferredRounds int
+	paidProviders     map[string]struct{}
+	transportFailures map[string]error
+	deferredRounds    map[string]int
+	// Paid attempts already made in rounds that later deferred the provider.
+	attemptedDuringDeferral map[string]int
 }
 
 // withSubscriptionRetry tracks subscription transport failures for requests
@@ -71,12 +64,12 @@ func (m *Manager) withSubscriptionRetry(ctx context.Context, providers []string)
 	}
 	var candidates []*Auth
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, auth := range m.auths {
 		if auth != nil && !auth.Disabled && auth.Status != StatusDisabled && slices.Contains(providers, executorKeyFromAuth(auth)) {
 			candidates = append(candidates, auth)
 		}
 	}
-	m.mu.RUnlock()
 	subscribed := subscribedProviders(candidates)
 	paid := make(map[string]struct{})
 	for _, auth := range candidates {
@@ -89,7 +82,12 @@ func (m *Manager) withSubscriptionRetry(ctx context.Context, providers []string)
 	if len(paid) == 0 {
 		return ctx
 	}
-	return context.WithValue(ctx, subscriptionRetryKey{}, &subscriptionRetryState{paidProviders: paid})
+	return context.WithValue(ctx, subscriptionRetryKey{}, &subscriptionRetryState{
+		paidProviders:           paid,
+		transportFailures:       make(map[string]error),
+		deferredRounds:          make(map[string]int),
+		attemptedDuringDeferral: make(map[string]int),
+	})
 }
 
 func subscriptionRetryFromContext(ctx context.Context) *subscriptionRetryState {
@@ -100,24 +98,19 @@ func subscriptionRetryFromContext(ctx context.Context) *subscriptionRetryState {
 	return retry
 }
 
-// isPaidFallback reports a paid key whose provider's subscriptions serve first.
-func (r *subscriptionRetryState) isPaidFallback(auth *Auth) bool {
-	if r == nil || !isPaidKey(auth) {
-		return false
-	}
-	_, ok := r.paidProviders[executorKeyFromAuth(auth)]
-	return ok
-}
-
 func temporaryPaidSelection(ctx context.Context, auth *Auth) bool {
 	retry := subscriptionRetryFromContext(ctx)
-	return retry != nil && retry.transportErr != nil && retry.isPaidFallback(auth)
+	return retry != nil && isPaidKey(auth) && retry.transportFailures[executorKeyFromAuth(auth)] != nil
 }
 
 // A Fast request may wrap a pre-HTTP network error as request-scoped. The
 // executor exposes that cause separately from failures of an accepted request.
 func normalizeSubscriptionTransport(ctx context.Context, auth *Auth, err error) error {
-	if subscriptionRetryFromContext(ctx) == nil || !isSubscriptionTier(auth) {
+	retry := subscriptionRetryFromContext(ctx)
+	if retry == nil || !isSubscriptionTier(auth) {
+		return err
+	}
+	if _, ok := retry.paidProviders[executorKeyFromAuth(auth)]; !ok {
 		return err
 	}
 	var preHTTP interface{ PreHTTPTransportError() error }
@@ -130,16 +123,57 @@ func normalizeSubscriptionTransport(ctx context.Context, auth *Auth, err error) 
 }
 
 func (r *subscriptionRetryState) observeFailure(ctx context.Context, auth *Auth, err error) {
-	if r != nil && isSubscriptionTier(auth) && len(logging.GetResponseHeaders(ctx)) == 0 && isTransientTransportError(err) {
-		r.transportErr = err
+	if r == nil || !isSubscriptionTier(auth) {
+		return
+	}
+	provider := executorKeyFromAuth(auth)
+	if _, ok := r.paidProviders[provider]; ok && len(logging.GetResponseHeaders(ctx)) == 0 && isTransientTransportError(err) {
+		r.transportFailures[provider] = err
 	}
 }
 
-func (r *subscriptionRetryState) paidRetryRound(round int) int {
-	if r != nil {
-		return round - r.deferredRounds
+func (r *subscriptionRetryState) effectiveRound(auth *Auth, round int) int {
+	if r == nil || !isPaidKey(auth) {
+		return round
 	}
-	return round
+	return round - r.deferredRounds[executorKeyFromAuth(auth)] + r.attemptedDuringDeferral[auth.ID]
+}
+
+// readySubscriptionRetries scans only subscriptions whose provider saw a
+// transport failure. The next round must be able to pick one immediately.
+func (m *Manager) readySubscriptionRetries(ctx context.Context, model string, opts cliproxyexecutor.Options, round, defaultRetry int, failures map[string]error) map[string]error {
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	registryRef := registry.GetGlobalRegistry()
+	ready := make(map[string]error)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	now := time.Now()
+	for _, auth := range m.auths {
+		provider := executorKeyFromAuth(auth)
+		cause := failures[provider]
+		if cause == nil || ready[provider] != nil || !isSubscriptionTier(auth) {
+			continue
+		}
+		if !eligibility.allows(auth) || (pinnedAuthID != "" && auth.ID != pinnedAuthID) || round >= effectiveRequestRetryLimit(auth, defaultRetry) {
+			continue
+		}
+		if _, ok := m.executorLocked(provider); !ok {
+			continue
+		}
+		selectionModel := model
+		if model != "" {
+			if !m.authSupportsRouteModel(registryRef, auth, model) {
+				continue
+			}
+			selectionModel = m.selectionModelForAuth(auth, model)
+		}
+		if blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, selectionModel, now, opts.Headers); !blocked {
+			ready[provider] = cause
+		}
+	}
+	return ready
 }
 
 // subscriptionRetryError ends a retry round so the next one can retry a subscription.
@@ -152,25 +186,48 @@ func (e *subscriptionRetryError) Unwrap() error { return e.cause }
 
 func (m *Manager) pickNextMixedWithSubscriptionRetry(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, round, defaultRetry int, attempted map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	retry := subscriptionRetryFromContext(ctx)
-	if retry != nil && retry.transportErr != nil {
-		subscriptionCtx := context.WithValue(ctx, deferPaidKey{}, retry)
-		auth, executor, provider, err := m.pickNextMixed(subscriptionCtx, providers, model, opts, tried)
-		if err == nil {
-			return auth, executor, provider, nil
-		}
-		var noAuth *Error
-		if !isAuthUnavailableError(err) && !(errors.As(err, &noAuth) && noAuth.Code == "auth_not_found") {
-			return nil, nil, "", err
-		}
-		_, _, maxWait := m.retrySettings()
-		// Hold the paid keys back only while a subscription can be retried in
-		// the next round. Once every subscription is cooling, e.g. after a 429
-		// on its retry, a ready paid key serves the request.
-		wait, canRetry := m.shouldRetryAfterErrorWithAttempted(subscriptionCtx, opts, retry.transportErr, round, providers, model, maxWait, -1, defaultRetry, attempted)
-		if canRetry && wait == 0 {
-			retry.deferredRounds++
-			return nil, nil, "", &subscriptionRetryError{cause: retry.transportErr}
+	if retry == nil || len(retry.transportFailures) == 0 {
+		return m.pickNextMixed(ctx, providers, model, opts, tried)
+	}
+
+	subscriptionCtx := context.WithValue(ctx, deferPaidKey{}, retry.transportFailures)
+	auth, executor, provider, err := m.pickNextMixed(subscriptionCtx, providers, model, opts, tried)
+	if !canReleasePaidFallbacks(err) {
+		return auth, executor, provider, err
+	}
+
+	ready := m.readySubscriptionRetries(ctx, model, opts, round, defaultRetry, retry.transportFailures)
+	if len(ready) == 0 {
+		return m.pickNextMixed(ctx, providers, model, opts, tried)
+	}
+	if len(ready) < len(retry.transportFailures) {
+		// One provider can release its paid keys while another can still retry
+		// a subscription. Exhaust the newly eligible picks in this round.
+		subscriptionCtx = context.WithValue(ctx, deferPaidKey{}, ready)
+		auth, executor, provider, err = m.pickNextMixed(subscriptionCtx, providers, model, opts, tried)
+		if !canReleasePaidFallbacks(err) {
+			return auth, executor, provider, err
 		}
 	}
-	return m.pickNextMixed(ctx, providers, model, opts, tried)
+
+	var cause error
+	for _, provider := range providers {
+		if failure := ready[provider]; failure != nil {
+			retry.deferredRounds[provider]++
+			cause = failure
+		}
+	}
+	m.mu.RLock()
+	for id := range attempted {
+		if auth := m.auths[id]; isPaidKey(auth) && ready[executorKeyFromAuth(auth)] != nil {
+			retry.attemptedDuringDeferral[id]++
+		}
+	}
+	m.mu.RUnlock()
+	return nil, nil, "", &subscriptionRetryError{cause: cause}
+}
+
+func canReleasePaidFallbacks(err error) bool {
+	var noAuth *Error
+	return isAuthUnavailableError(err) || (errors.As(err, &noAuth) && noAuth != nil && noAuth.Code == "auth_not_found")
 }
