@@ -97,6 +97,11 @@ func unwrapExecutionBoundaryError(err error) error {
 	if retry, ok := err.(*subscriptionRetryError); ok {
 		err = unwrapUpstreamExecutionAttempt(retry.cause)
 	}
+	return hideBillingError(err)
+}
+
+// hideBillingError keeps an upstream credential's billing response from the client.
+func hideBillingError(err error) error {
 	if isCredentialBillingExhaustedError(err) {
 		return &Error{Code: "auth_unavailable", Message: "upstream credentials are unavailable", HTTPStatus: http.StatusServiceUnavailable}
 	}

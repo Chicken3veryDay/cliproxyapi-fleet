@@ -172,6 +172,10 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				applyRequestScopedActionToResult(action, okAction, &result)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 			}
+			if chunk.Err != nil {
+				// The cooldown above saw the upstream error; the client does not.
+				chunk.Err = hideBillingError(chunk.Err)
+			}
 			if !forward {
 				return false
 			}

@@ -396,7 +396,8 @@ func IsCredentialBillingExhausted(status int, err error) bool {
 			return true
 		}
 	}
-	return false
+	// The OpenAI platform also reports exhausted credits by message alone.
+	return billingMessageMatches(err, isNoCreditsRemainingMessage)
 }
 
 func billingErrorBody(err error) string {
@@ -411,16 +412,27 @@ func billingErrorBody(err error) string {
 }
 
 func hasCreditBalanceTooLowBody(err error) bool {
+	return billingMessageMatches(err, isCreditBalanceTooLowMessage)
+}
+
+// billingMessageMatches applies match to the error's upstream message, or to
+// the whole body when it is not JSON.
+func billingMessageMatches(err error, match func(string) bool) bool {
 	body := billingErrorBody(err)
 	if !ojson.Valid(body) {
-		return isCreditBalanceTooLowMessage(body)
+		return match(body)
 	}
 	for _, path := range []string{"error.message", "message", "response.error.message", "body.error.message"} {
-		if isCreditBalanceTooLowMessage(ojson.Get(body, path).String()) {
+		if match(ojson.Get(body, path).String()) {
 			return true
 		}
 	}
 	return false
+}
+
+func isNoCreditsRemainingMessage(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "you have no credits remaining")
 }
 
 func isCreditBalanceTooLowMessage(message string) bool {
