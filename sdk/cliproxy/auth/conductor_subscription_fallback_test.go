@@ -58,8 +58,7 @@ func TestHubSubscriptionBeforePaid(t *testing.T) {
 			})
 			t.Run("override a cached paid binding", func(t *testing.T) {
 				m, executor, call := newHubFallbackTest(t, operation, "claude", 0, "sub", "paid")
-				selector := m.Selector().(*SessionAffinitySelector)
-				selector.cache.SetAliases(executor.authIDs["paid"], "mixed::claude:"+hubFallbackSessionID+"::"+canonicalModelKey(executor.model))
+				bindHubSession(m, executor, "paid")
 				if err := call(); err != nil {
 					t.Fatal(err)
 				}
@@ -166,8 +165,7 @@ func TestHubCodexSubscriptionBeforePaid(t *testing.T) {
 			})
 			t.Run("override a cached paid binding", func(t *testing.T) {
 				m, executor, call := newHubFallbackTest(t, operation, "codex", 0, "sub", "paid")
-				selector := m.Selector().(*SessionAffinitySelector)
-				selector.cache.SetAliases(executor.authIDs["paid"], "mixed::claude:"+hubFallbackSessionID+"::"+canonicalModelKey(executor.model))
+				bindHubSession(m, executor, "paid")
 				if bound, _ := m.LookupSessionAffinity("codex", executor.model, hubFallbackSessionID); bound == nil || bound.ID != executor.authIDs["paid"] {
 					t.Fatal("test setup did not bind the session to the paid key")
 				}
@@ -209,7 +207,11 @@ type hubFallbackTestExecutor struct {
 	authIDs  map[string]string
 	names    map[string]string
 	failures map[string][]error
-	calls    []string
+	// midStream fails a credential's stream after its first payload.
+	midStream map[string][]error
+	// providers overrides the request's provider list.
+	providers []string
+	calls     []string
 }
 
 func (e *hubFallbackTestExecutor) next(ctx context.Context, auth *Auth) error {
@@ -236,8 +238,12 @@ func (e *hubFallbackTestExecutor) ExecuteStream(ctx context.Context, a *Auth, _ 
 	if err := e.next(ctx, a); err != nil {
 		return nil, err
 	}
-	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
+	chunks := make(chan cliproxyexecutor.StreamChunk, 2)
 	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("ok")}
+	if queue := e.midStream[e.names[a.ID]]; len(queue) > 0 {
+		e.midStream[e.names[a.ID]] = queue[1:]
+		chunks <- cliproxyexecutor.StreamChunk{Err: queue[0]}
+	}
 	close(chunks)
 	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -251,14 +257,14 @@ func newHubFallbackTest(t *testing.T, operation, provider string, retries int, n
 	e := &hubFallbackTestExecutor{
 		authFallbackExecutor: authFallbackExecutor{id: provider},
 		model:                "hub-model-" + t.Name(), authIDs: make(map[string]string), names: make(map[string]string),
-		failures: make(map[string][]error),
+		failures: make(map[string][]error), midStream: make(map[string][]error),
 	}
 	m.RegisterExecutor(e)
 	ctx := context.Background()
 	for _, name := range names {
 		id := t.Name() + "/" + name
 		e.authIDs[name], e.names[id] = id, name
-		attributes := map[string]string{"priority": "0"}
+		attributes := map[string]string{"priority": "0", "auth_kind": "oauth"}
 		var metadata map[string]any
 		if name == "paid" || name == "paid-second" {
 			attributes["priority"] = "-1"
@@ -273,8 +279,11 @@ func newHubFallbackTest(t *testing.T, operation, provider string, retries int, n
 	}
 	return m, e, func() error {
 		req := cliproxyexecutor.Request{Model: e.model}
-		opts := cliproxyexecutor.Options{Headers: http.Header{"X-Claude-Code-Session-Id": {hubFallbackSessionID}}}
+		opts := cliproxyexecutor.Options{Headers: hubSessionHeaders(provider)}
 		providers := []string{provider}
+		if len(e.providers) > 0 {
+			providers = e.providers
+		}
 		switch operation {
 		case "stream":
 			result, err := m.ExecuteStream(ctx, providers, req, opts)
@@ -296,6 +305,24 @@ func newHubFallbackTest(t *testing.T, operation, provider string, retries int, n
 			return err
 		}
 	}
+}
+
+// bindHubSession caches the test session's binding to the named credential.
+func bindHubSession(m *Manager, e *hubFallbackTestExecutor, name string) {
+	client := "claude:"
+	if e.id == "codex" {
+		client = "codex:"
+	}
+	key := "mixed::" + client + hubFallbackSessionID + "::" + canonicalModelKey(e.model)
+	m.Selector().(*SessionAffinitySelector).cache.SetAliases(e.authIDs[name], key)
+}
+
+// hubSessionHeaders carries the session header each provider's client sends.
+func hubSessionHeaders(provider string) http.Header {
+	if provider == "codex" {
+		return http.Header{"Session_id": {hubFallbackSessionID}}
+	}
+	return http.Header{"X-Claude-Code-Session-Id": {hubFallbackSessionID}}
 }
 
 func assertHubAuthCalls(t *testing.T, e *hubFallbackTestExecutor, want ...string) {

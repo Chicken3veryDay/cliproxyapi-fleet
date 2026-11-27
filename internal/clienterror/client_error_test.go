@@ -388,3 +388,24 @@ func TestIsClientCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestIsCredentialBillingExhaustedNoCreditsMessage(t *testing.T) {
+	const noCredits = "You have no credits remaining. Add credits to continue."
+	for name, tc := range map[string]struct {
+		status int
+		err    error
+		want   bool
+	}{
+		"json message only": {http.StatusTooManyRequests, errors.New(`{"error":{"message":"` + noCredits + `"}}`), true},
+		"plain body":        {http.StatusTooManyRequests, errors.New(noCredits), true},
+		"bad request":       {http.StatusBadRequest, errors.New(`{"error":{"message":"` + noCredits + `"}}`), true},
+		"coded":             {http.StatusTooManyRequests, errors.New(`{"error":{"code":"insufficient_quota"}}`), true},
+		"rate limit":        {http.StatusTooManyRequests, errors.New(`{"error":{"message":"Rate limit reached for requests"}}`), false},
+		"server error":      {http.StatusInternalServerError, errors.New(noCredits), false},
+		"unrelated mention": {http.StatusTooManyRequests, errors.New(`{"error":{"message":"Too many requests"},"hint":"` + noCredits + `"}`), false},
+	} {
+		if got := IsCredentialBillingExhausted(tc.status, tc.err); got != tc.want {
+			t.Errorf("%s: IsCredentialBillingExhausted = %v, want %v", name, got, tc.want)
+		}
+	}
+}
