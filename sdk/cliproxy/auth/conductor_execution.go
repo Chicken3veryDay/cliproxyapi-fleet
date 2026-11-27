@@ -551,7 +551,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry.paidRetryRound(retryRound), defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -777,7 +777,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry.paidRetryRound(retryRound), defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1009,7 +1009,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry.paidRetryRound(retryRound), defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}

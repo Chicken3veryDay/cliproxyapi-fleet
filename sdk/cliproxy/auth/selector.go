@@ -1120,22 +1120,19 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 	return cliproxysession.NewInMemorySessionTreeStore(0, time.Hour)
 }
 
-// A paid fallback binding remains eligible only while no subscription is available.
+// A paid fallback binding remains eligible only while none of its provider's
+// subscriptions is available. Keys of providers without one keep their bindings.
 func preferSubscriptions(available []*Auth) []*Auth {
-	hasSubscription := false
-	hasPaid := false
-	for _, auth := range available {
-		hasPaid = hasPaid || isPaidFallback(auth)
-		hasSubscription = hasSubscription || isSubscriptionTier(auth)
-	}
-	if !hasSubscription || !hasPaid {
+	subscribed := subscribedProviders(available)
+	if len(subscribed) == 0 {
 		return available
 	}
 	preferred := make([]*Auth, 0, len(available))
 	for _, auth := range available {
-		if !isPaidFallback(auth) {
-			preferred = append(preferred, auth)
+		if _, ok := subscribed[executorKeyFromAuth(auth)]; ok && isPaidKey(auth) {
+			continue
 		}
+		preferred = append(preferred, auth)
 	}
 	return preferred
 }
