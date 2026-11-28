@@ -2272,3 +2272,45 @@ func TestCodexClientModelsResponse_EmbeddedGPT62SolAndGPT55OmitAudio(t *testing.
 		}
 	}
 }
+
+func TestCodexClientCatalogUsesFleetGPT62ContextWindow(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("codex-gpt62-context-test", "codex", registry.GetCodexProModels())
+	t.Cleanup(func() { modelRegistry.UnregisterClient("codex-gpt62-context-test") })
+
+	resp := BuildResponseForClient(modelRegistry.GetAvailableModels("openai"), modelRegistry.GetModelProviders, false, "0.153.4")
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
+	}
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, model := range models {
+		bySlug[stringModelValue(model, "slug")] = model
+	}
+	for _, slug := range []string{"gpt-6.2-sol", "gpt-6.2-astra"} {
+		entry := bySlug[slug]
+		if entry == nil {
+			t.Fatalf("missing model %q", slug)
+		}
+		for _, field := range []string{"context_window", "max_context_window"} {
+			if got := intModelValue(entry, field); got != 1050000 {
+				t.Errorf("%s %s = %d, want 1050000", slug, field, got)
+			}
+		}
+		if got := fmt.Sprint(entry["input_modalities"]); got != "[text image]" {
+			t.Errorf("%s input_modalities = %s, want [text image]", slug, got)
+		}
+		levels := map[string]bool{}
+		if raw, ok := entry["supported_reasoning_levels"].([]any); ok {
+			for _, level := range raw {
+				if m, ok := level.(map[string]any); ok {
+					levels[stringModelValue(m, "effort")] = true
+				}
+			}
+		}
+		want := map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+		if fmt.Sprint(levels) != fmt.Sprint(want) {
+			t.Errorf("%s reasoning levels = %v, want %v", slug, levels, want)
+		}
+	}
+}

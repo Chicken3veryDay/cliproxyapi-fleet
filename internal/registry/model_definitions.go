@@ -169,6 +169,11 @@ func codex62ModelInfo(id, name string) *ModelInfo {
 		ID: id, Object: "model", OwnedBy: "openai", Type: "openai",
 		DisplayName: name, Version: id,
 		ContextLength: 1050000, MaxCompletionTokens: 128000,
+		// Upstream's Codex client catalog template (500k/272k, up to ultra)
+		// wins over ContextLength and Thinking; only MaxContextLength and
+		// ExplicitThinking override it there.
+		MaxContextLength:          1050000,
+		ExplicitThinking:          true,
 		SupportedParameters:       []string{"tools"},
 		SupportedInputModalities:  []string{"text", "image"},
 		SupportedOutputModalities: []string{"text"},
