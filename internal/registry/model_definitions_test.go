@@ -486,6 +486,9 @@ func TestCodex62BuiltinsSurviveStaleCatalog(t *testing.T) {
 		if found.Thinking == nil || !reflect.DeepEqual(found.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
 			t.Fatalf("%s has incorrect reasoning levels: %+v", id, found.Thinking)
 		}
+		if found.NativeCapabilities == nil || found.NativeCapabilities.WebSearch == nil || !*found.NativeCapabilities.WebSearch || !found.SupportConfigurationUpdate {
+			t.Fatalf("%s lost upstream capability flags: %+v", id, found)
+		}
 		if models[0].ID != "existing-model" {
 			t.Fatal("existing catalog entry lost")
 		}

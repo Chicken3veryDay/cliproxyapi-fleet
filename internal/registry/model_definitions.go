@@ -164,6 +164,7 @@ func normalizeAntigravityCapabilityModelID(modelID string) string {
 // GPT-6.2 metadata: https://developers.openai.com/api/docs/models/gpt-6.2-sol
 // and https://developers.openai.com/api/docs/models/gpt-6.2-astra.
 func codex62ModelInfo(id, name string) *ModelInfo {
+	webSearch := true
 	return &ModelInfo{
 		ID: id, Object: "model", OwnedBy: "openai", Type: "openai",
 		DisplayName: name, Version: id,
@@ -172,6 +173,10 @@ func codex62ModelInfo(id, name string) *ModelInfo {
 		SupportedInputModalities:  []string{"text", "image"},
 		SupportedOutputModalities: []string{"text"},
 		Thinking:                  &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+		// Keep the capability flags upstream's catalog sets for these models;
+		// the builtin replaces the catalog entry wholesale.
+		NativeCapabilities:         &NativeCapabilities{WebSearch: &webSearch},
+		SupportConfigurationUpdate: true,
 	}
 }
 
