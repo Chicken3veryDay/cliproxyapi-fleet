@@ -274,6 +274,9 @@ func newAuthUnavailableError(next, now time.Time) error {
 }
 
 func newAuthUnavailableErrorWithCause(next, now time.Time, cause error) error {
+	if isCredentialBillingExhaustedError(cause) {
+		cause = nil
+	}
 	err := &Error{Code: "auth_unavailable", Message: "no auth available"}
 	if next.After(now) {
 		err.HTTPStatus = http.StatusServiceUnavailable

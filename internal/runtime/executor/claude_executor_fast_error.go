@@ -53,6 +53,14 @@ func (e *claudeFastRequestError) StatusCode() int {
 	return e.status
 }
 
+// PreHTTPTransportError exposes the cause only when no HTTP response was received.
+func (e *claudeFastRequestError) PreHTTPTransportError() error {
+	if e == nil || e.status != 0 {
+		return nil
+	}
+	return e.cause
+}
+
 func (e *claudeFastRequestError) IsRequestScoped() bool {
 	if e == nil {
 		return false

@@ -637,3 +637,35 @@ func TestFileTokenStoreSaveReplacesAuthFileAtomically(t *testing.T) {
 		t.Fatalf("unexpected files left in auth dir: %v", entries)
 	}
 }
+
+func TestFileTokenStoreClassifiesLegacyOAuthTokens(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"legacy-access.json":  `{"type":"claude","accessToken":"access"}`,
+		"legacy-refresh.json": `{"type":"claude","refreshToken":"refresh"}`,
+		"unknown.json":        `{"type":"claude","note":"unclassified file"}`,
+	} {
+		if errWrite := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatal(errList)
+	}
+	if len(auths) != 3 {
+		t.Fatalf("listed %d credentials, want 3", len(auths))
+	}
+	for _, auth := range auths {
+		want := cliproxyauth.AuthKindOAuth
+		if auth.FileName == "unknown.json" {
+			want = ""
+		}
+		if got := auth.AuthKind(); got != want {
+			t.Errorf("%s kind = %q, want %q", auth.FileName, got, want)
+		}
+	}
+}

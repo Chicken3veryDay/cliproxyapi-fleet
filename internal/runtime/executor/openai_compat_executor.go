@@ -19,6 +19,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -1376,10 +1377,15 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
 			break
 		}
 	}
+	streamErr := statusErr{msg: string(payload)}
 	if status < http.StatusBadRequest || status > 599 {
-		status = http.StatusBadGateway
+		status = clienterror.InferCredentialBillingStatus(streamErr)
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
 	}
-	return statusErr{code: status, msg: string(payload)}, true
+	streamErr.code = status
+	return streamErr, true
 }
 
 type statusErr struct {

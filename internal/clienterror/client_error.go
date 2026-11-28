@@ -111,10 +111,8 @@ func IsRequestFault(status int, err error) bool {
 	if IsDevinRequestPermissionDenied(status, err) {
 		return true
 	}
-	// Anthropic reports an exhausted API credit balance as 400 with an
-	// invalid_request_error body. Preserve credential cooldown and rotation
-	// without weakening generic 400 request-fault handling.
-	if IsCreditBalanceTooLow(status, err) {
+	// A billing rejection is specific to the selected credential.
+	if IsCredentialBillingExhausted(status, err) {
 		return false
 	}
 	// Model not found indicates a credential-model capability mismatch rather than
@@ -504,16 +502,84 @@ func forEachErrorJSONBody(err error, fn func(body string) bool) bool {
 	return false
 }
 
-func hasCreditBalanceTooLowBody(err error) bool {
-	return forEachErrorJSONBody(err, func(body string) bool {
-		for _, path := range []string{"error.message", "message", "response.error.message", "body.error.message"} {
-			msg := strings.ToLower(strings.TrimSpace(ojson.Get(body, path).String()))
-			if strings.HasPrefix(msg, "your credit balance is too low") {
+// IsCredentialBillingExhausted identifies upstream API credit or billing quota failures.
+func IsCredentialBillingExhausted(status int, err error) bool {
+	if status <= 0 && err != nil {
+		status = HTTPStatusFromError(err)
+	}
+	if IsCreditBalanceTooLow(status, err) {
+		return true
+	}
+	if err == nil || (status != http.StatusBadRequest && status != http.StatusTooManyRequests) {
+		return false
+	}
+	if forEachErrorJSONBody(err, func(body string) bool {
+		for _, path := range []string{"error.code", "error.type", "code", "type", "response.error.code", "response.error.type", "body.error.code", "body.error.type"} {
+			if strings.EqualFold(strings.TrimSpace(ojson.Get(body, path).String()), "insufficient_quota") {
 				return true
 			}
 		}
 		return false
-	})
+	}) {
+		return true
+	}
+	// The OpenAI platform also reports exhausted credits by message alone.
+	return billingMessageMatches(err, isNoCreditsRemainingMessage)
+}
+
+// InferCredentialBillingStatus identifies a billing status for a failure event
+// whose upstream payload did not carry a status code.
+func InferCredentialBillingStatus(err error) int {
+	switch {
+	case IsCreditBalanceTooLow(http.StatusBadRequest, err):
+		return http.StatusBadRequest
+	case IsCredentialBillingExhausted(http.StatusTooManyRequests, err):
+		return http.StatusTooManyRequests
+	default:
+		return 0
+	}
+}
+
+func hasCreditBalanceTooLowBody(err error) bool {
+	return billingMessageMatches(err, isCreditBalanceTooLowMessage)
+}
+
+// billingMessageMatches applies match to the error's upstream message, or to
+// the whole body when it is not JSON.
+func billingMessageMatches(err error, match func(string) bool) bool {
+	if forEachErrorJSONBody(err, func(body string) bool {
+		for _, path := range []string{"error.message", "message", "response.error.message", "body.error.message"} {
+			if match(ojson.Get(body, path).String()) {
+				return true
+			}
+		}
+		return false
+	}) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	body := strings.TrimSpace(err.Error())
+	type responseBodyProvider interface {
+		ResponseBody() []byte
+	}
+	var responseBody responseBodyProvider
+	if errors.As(err, &responseBody) && responseBody != nil && len(responseBody.ResponseBody()) > 0 {
+		body = strings.TrimSpace(string(responseBody.ResponseBody()))
+	}
+	body = unwrapKnownErrorWrapper(body)
+	return body != "" && !ojson.Valid(body) && match(body)
+}
+
+func isNoCreditsRemainingMessage(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "you have no credits remaining")
+}
+
+func isCreditBalanceTooLowMessage(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "your credit balance is too low") || strings.HasPrefix(message, "credit balance is too low")
 }
 
 func hasModelNotFoundErrorBody(err error) bool {

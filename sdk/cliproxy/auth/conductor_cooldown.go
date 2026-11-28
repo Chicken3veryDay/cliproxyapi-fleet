@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"golang.org/x/net/http2"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -1694,6 +1695,11 @@ func (m *Manager) markResult(ctx context.Context, result Result) bool {
 			}
 		}
 	}
+	billingExhausted := !result.Success && isCredentialBillingExhaustedResultError(result.Error)
+	if billingExhausted {
+		result.CredentialScope = true
+		result.RetryAfter = billingQuotaRetryAfter(result.RetryAfter)
+	}
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
@@ -1901,6 +1907,9 @@ func (m *Manager) markResult(ctx context.Context, result Result) bool {
 					}
 
 					statusCode := statusCodeFromResult(result.Error)
+					if billingExhausted {
+						statusCode = http.StatusTooManyRequests
+					}
 					if isModelSupportResultError(result.Error) {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
@@ -1925,7 +1934,7 @@ func (m *Manager) markResult(ctx context.Context, result Result) bool {
 							NextRecoverAt: next,
 							BackoffLevel:  backoffLevel,
 						})
-					} else if isInvalidGrantResultError(result.Error) || isCreditBalanceTooLowResultError(result.Error) {
+					} else if isInvalidGrantResultError(result.Error) {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
 						} else {
@@ -2258,7 +2267,7 @@ func (m *Manager) markResult(ctx context.Context, result Result) bool {
 						state = outerState
 						modelState = state
 					}
-					if result.CredentialScope && !disableCooling && statusCodeFromResult(result.Error) == 429 {
+					if result.CredentialScope && !disableCooling && statusCode == http.StatusTooManyRequests {
 						auth.cooldownRecordedSeq = cooldownSeq
 						for _, otherState := range auth.ModelStates {
 							if otherState != nil && otherState != state {
@@ -2351,7 +2360,7 @@ func (m *Manager) markResult(ctx context.Context, result Result) bool {
 						statusCodeFromResult(result.Error) == 429 &&
 						!isTransientRateLimitResultError(result.Error) &&
 						!isCloudflareChallengeResultError(result.Error) &&
-						!isCreditBalanceTooLowResultError(result.Error) &&
+						!isCredentialBillingExhaustedResultError(result.Error) &&
 						!isInvalidGrantResultError(result.Error) &&
 						auth.Quota.Exceeded
 					if isQuota429 {
@@ -2496,15 +2505,18 @@ func (m *Manager) markResult(ctx context.Context, result Result) bool {
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
-	m.updateSessionAffinity(result)
+	m.updateSessionAffinity(ctx, result, authSnapshot)
 	return appliedVerification
 }
 
-func (m *Manager) updateSessionAffinity(result Result) {
+func (m *Manager) updateSessionAffinity(ctx context.Context, result Result, auth *Auth) {
 	if m == nil {
 		return
 	}
 	sel := m.Selector()
+	if _, ok := sel.(*SessionAffinitySelector); ok && temporaryPaidSelection(ctx, auth) {
+		return
+	}
 	if affinity, ok := sel.(interface {
 		OnResult(Result)
 	}); ok && affinity != nil {
@@ -2551,7 +2563,7 @@ func (m *Manager) reportHomeResult(ctx context.Context, result Result, auth *Aut
 	}
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, snapshot)
-	m.updateSessionAffinity(result)
+	m.updateSessionAffinity(ctx, result, snapshot)
 }
 
 func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) {
@@ -3346,6 +3358,10 @@ func resultErrorFromError(err error) *Error {
 		}
 	}
 	switch {
+	case isCredentialBillingExhaustedError(err):
+		// Billing exhaustion is credential-scoped too; keep its own code so
+		// MarkResult applies the billing cooldown.
+		resultErr.Code = billingQuotaErrorCode
 	case isCredentialScopedError(err):
 		// A credential-scoped failure always stays on the credential quota path;
 		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
@@ -3452,6 +3468,9 @@ func isConnectionLifecycleResultError(err *Error) bool {
 }
 
 func isConnectionLifecycleMessage(message string) bool {
+	if _, ok := http2StreamErrorDetails(message); ok {
+		return false
+	}
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if lower == "" {
 		return false
@@ -3525,7 +3544,18 @@ func isTransientTransportError(err error) bool {
 	if errors.As(err, &opErr) && opErr != nil {
 		return true
 	}
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		return isPeerProtocolReset(streamErr)
+	}
 	return isTransientTransportMessage(err.Error())
+}
+
+// isPeerProtocolReset reports an HTTP/2 PROTOCOL_ERROR reset the server sent
+// for the request stream, e.g. chatgpt.com's. The transport raises the same
+// code locally for a malformed response, which is not transient.
+func isPeerProtocolReset(err http2.StreamError) bool {
+	return err.Code == http2.ErrCodeProtocol && err.Cause != nil && err.Cause.Error() == "received from peer"
 }
 
 func isTransientTransportResultError(err *Error) bool {
@@ -3563,13 +3593,28 @@ func isTransientSyscallError(err error) bool {
 	}
 }
 
+// http2StreamErrorDetails separates a stream reset code and cause from its
+// stream ID and any wrapping error prefix.
+func http2StreamErrorDetails(message string) (string, bool) {
+	_, streamError, ok := strings.Cut(strings.TrimSpace(message), "stream error: stream ID ")
+	if !ok {
+		return "", false
+	}
+	_, details, _ := strings.Cut(streamError, "; ")
+	return details, true
+}
+
 func isTransientTransportMessage(message string) bool {
+	if details, ok := http2StreamErrorDetails(message); ok {
+		return details == "PROTOCOL_ERROR; received from peer"
+	}
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if lower == "" {
 		return false
 	}
 	switch {
 	case strings.Contains(lower, "tls: tls handshake"),
+		strings.Contains(lower, "claude tls: handshake upstream:"),
 		strings.Contains(lower, "tls handshake timeout"),
 		strings.Contains(lower, "wsarecv"),
 		strings.Contains(lower, "wsasend"),
@@ -3919,7 +3964,7 @@ func isCredentialScopedError(err error) bool {
 	if errors.As(err, &csp) && csp != nil && csp.IsCredentialScoped() {
 		return true
 	}
-	return strings.EqualFold(errorCodeFromError(err), credentialQuotaErrorCode)
+	return strings.EqualFold(errorCodeFromError(err), credentialQuotaErrorCode) || isCredentialBillingExhaustedError(err)
 }
 
 func statusCodeFromResult(err *Error) int {
@@ -4000,33 +4045,39 @@ func isInvalidGrantResultError(err *Error) bool {
 	return false
 }
 
-func isCreditBalanceTooLowError(err error) bool {
+const (
+	billingQuotaErrorCode = "billing_quota_exhausted"
+	billingQuotaCooldown  = time.Hour
+)
+
+func billingQuotaRetryAfter(hint *time.Duration) *time.Duration {
+	if hint != nil && *hint >= billingQuotaCooldown {
+		return hint
+	}
+	wait := billingQuotaCooldown
+	return &wait
+}
+
+func isCredentialBillingExhaustedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	status := statusCodeFromError(err)
-	if clienterror.IsCreditBalanceTooLow(status, err) {
-		return true
-	}
 	var authErr *Error
-	if errors.As(err, &authErr) && authErr != nil && authErr.Message != "" {
-		return clienterror.IsCreditBalanceTooLow(status, errors.New(authErr.Message))
+	if errors.As(err, &authErr) && authErr != nil {
+		return isCredentialBillingExhaustedResultError(authErr)
 	}
-	return false
+	return clienterror.IsCredentialBillingExhausted(statusCodeFromError(err), err)
 }
 
-func isCreditBalanceTooLowResultError(err *Error) bool {
+func isCredentialBillingExhaustedResultError(err *Error) bool {
 	if err == nil {
 		return false
 	}
 	status := statusCodeFromResult(err)
-	if clienterror.IsCreditBalanceTooLow(status, err) {
+	if (status == http.StatusBadRequest || status == http.StatusTooManyRequests) && (err.Code == billingQuotaErrorCode || strings.EqualFold(err.Code, "insufficient_quota")) {
 		return true
 	}
-	if err.Message != "" {
-		return clienterror.IsCreditBalanceTooLow(status, errors.New(err.Message))
-	}
-	return false
+	return clienterror.IsCredentialBillingExhausted(status, errors.New(err.Message))
 }
 
 func isModelSupportResultError(err *Error) bool {
@@ -4160,7 +4211,7 @@ func isCountTokensEndpointNotFoundError(err error, requestedModel string) bool {
 	if status == http.StatusNotFound {
 		return true
 	}
-	if isCredentialScopedError(err) || isCloudflareChallengeError(err) || isInvalidGrantError(err) || isCreditBalanceTooLowError(err) || isModelSupportErrorMessage(err.Error()) {
+	if isCredentialScopedError(err) || isCloudflareChallengeError(err) || isInvalidGrantError(err) || isModelSupportErrorMessage(err.Error()) {
 		return false
 	}
 	switch status {
@@ -4196,7 +4247,7 @@ func isResponsesCompactRequestFaultError(opts cliproxyexecutor.Options, err erro
 	if !isResponsesCompactRequest(opts) || err == nil {
 		return false
 	}
-	if isCredentialScopedError(err) || isCloudflareChallengeError(err) || isInvalidGrantError(err) || isCreditBalanceTooLowError(err) {
+	if isCredentialScopedError(err) || isCloudflareChallengeError(err) || isInvalidGrantError(err) {
 		return false
 	}
 	status := statusCodeFromError(err)
@@ -4224,10 +4275,10 @@ func isResponsesCompactAvailabilityNeutralError(opts cliproxyexecutor.Options, e
 	if resultErr != nil && resultErr.Code == ErrorCodeForceCooldown {
 		return false
 	}
-	if isCredentialScopedError(err) || isCloudflareChallengeError(err) || isInvalidGrantError(err) || isCreditBalanceTooLowError(err) {
+	if isCredentialScopedError(err) || isCloudflareChallengeError(err) || isInvalidGrantError(err) {
 		return false
 	}
-	if resultErr != nil && (isCloudflareChallengeResultError(resultErr) || isInvalidGrantResultError(resultErr) || isCreditBalanceTooLowResultError(resultErr)) {
+	if resultErr != nil && (isCloudflareChallengeResultError(resultErr) || isInvalidGrantResultError(resultErr) || isCredentialBillingExhaustedResultError(resultErr)) {
 		return false
 	}
 	status := statusCodeFromError(err)
@@ -4444,6 +4495,9 @@ func isRequestInvalidError(err error) bool {
 		// already submitted and must not be replayed on another credential.
 		return true
 	}
+	if isCredentialBillingExhaustedError(err) {
+		return false
+	}
 	if isRequestScopedError(err) {
 		return true
 	}
@@ -4451,9 +4505,6 @@ func isRequestInvalidError(err error) bool {
 		return false
 	}
 	if isInvalidGrantError(err) {
-		return false
-	}
-	if isCreditBalanceTooLowError(err) {
 		return false
 	}
 	if isModelSupportError(err) {
@@ -4557,12 +4608,17 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		} else {
 			auth.NextRetryAfter = now.Add(30 * time.Minute)
 		}
-	} else if isCreditBalanceTooLowResultError(resultErr) {
+	} else if isCredentialBillingExhaustedResultError(resultErr) {
 		auth.StatusMessage = "payment_required"
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
 		} else {
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
+			next := now.Add(*billingQuotaRetryAfter(retryAfter))
+			if auth.Quota.NextRecoverAt.After(next) {
+				next = auth.Quota.NextRecoverAt
+			}
+			applyCooldownFields(&auth.Quota, QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: next})
+			auth.NextRetryAfter = next
 		}
 	} else {
 		switch statusCode {

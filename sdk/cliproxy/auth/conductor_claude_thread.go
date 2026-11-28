@@ -108,7 +108,7 @@ func shouldRewriteClaudeThreadOwnerUnavailable(err error) bool {
 	case "auth_not_found", "auth_unavailable", "model_cooldown", "session_auth_unavailable":
 		return true
 	}
-	if isCredentialScopedError(err) || isInvalidGrantError(err) || isCreditBalanceTooLowError(err) {
+	if isCredentialScopedError(err) || isInvalidGrantError(err) || isCredentialBillingExhaustedError(err) {
 		return true
 	}
 	switch statusCodeFromError(err) {

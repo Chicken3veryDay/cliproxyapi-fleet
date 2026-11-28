@@ -810,7 +810,7 @@ func isQuotaCooldownResultError(err *Error) bool {
 	if isCloudflareChallengeResultError(err) ||
 		isTransientRateLimitResultError(err) ||
 		isInvalidGrantResultError(err) ||
-		isCreditBalanceTooLowResultError(err) ||
+		isCredentialBillingExhaustedResultError(err) ||
 		isTOSViolationResultError(err) {
 		return false
 	}

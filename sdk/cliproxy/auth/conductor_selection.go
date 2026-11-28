@@ -110,6 +110,8 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+	// deferPaid lists the providers whose paid fallbacks are temporarily excluded.
+	deferPaid map[string]error
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -132,6 +134,7 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
+		eligibility.deferPaid, _ = ctx.Value(deferPaidKey{}).(map[string]error)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
 	}
 	return eligibility
@@ -139,6 +142,9 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
+		return false
+	}
+	if len(e.deferPaid) > 0 && isPaidKey(auth) && e.deferPaid[executorKeyFromAuth(auth)] != nil {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
@@ -1515,7 +1521,8 @@ func (m *Manager) normalizeProviders(providers []string) []string {
 	result := make([]string, 0, len(providers))
 	seen := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		p := strings.TrimSpace(strings.ToLower(provider))
+		// One canonical key for retry setup, cooldown lookup and selection.
+		p := canonicalSchedulingProvider(provider)
 		if p == "" {
 			continue
 		}
@@ -1600,7 +1607,7 @@ func effectiveRequestRetryLimit(auth *Auth, defaultRetry int) int {
 	return defaultRetry
 }
 
-func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetry int) map[string]struct{} {
+func (m *Manager) requestRetryRoundExclusions(retryRound int, subscriptionRetry *subscriptionRetryState, defaultRequestRetry int) map[string]struct{} {
 	excluded := make(map[string]struct{})
 	if m == nil || retryRound <= 0 {
 		return excluded
@@ -1614,7 +1621,7 @@ func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetr
 		if auth == nil || strings.TrimSpace(auth.ID) == "" {
 			continue
 		}
-		if effectiveRequestRetryLimit(auth, defaultRequestRetry) < retryRound {
+		if effectiveRequestRetryLimit(auth, defaultRequestRetry) < subscriptionRetry.effectiveRound(auth, retryRound) {
 			excluded[auth.ID] = struct{}{}
 		}
 	}
@@ -1728,7 +1735,6 @@ func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
-	now := time.Now()
 	if defaultRequestRetry < 0 {
 		defaultRequestRetry = 0
 	}
@@ -1740,9 +1746,11 @@ func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context
 		}
 		providerSet[key] = struct{}{}
 	}
+	retry := subscriptionRetryFromContext(ctx)
 	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	now := time.Now()
 	var (
 		found   bool
 		minWait time.Duration
@@ -1765,7 +1773,7 @@ func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context
 			continue
 		}
 		effectiveRetry := effectiveRequestRetryLimit(auth, defaultRequestRetry)
-		if attempt >= effectiveRetry {
+		if retry.effectiveRound(auth, attempt) >= effectiveRetry {
 			continue
 		}
 		checkModel := model
@@ -1830,7 +1838,6 @@ func (m *Manager) retryAllowedForRequest(ctx context.Context, attempt int, provi
 	if m == nil || attempt < 0 || len(providers) == 0 {
 		return false
 	}
-	now := time.Now()
 	if defaultRequestRetry < 0 {
 		defaultRequestRetry = 0
 	}
@@ -1846,9 +1853,11 @@ func (m *Manager) retryAllowedForRequest(ctx context.Context, attempt int, provi
 		return false
 	}
 
+	retry := subscriptionRetryFromContext(ctx)
 	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	now := time.Now()
 	for _, auth := range m.auths {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 			continue
@@ -1867,7 +1876,7 @@ func (m *Manager) retryAllowedForRequest(ctx context.Context, attempt int, provi
 			continue
 		}
 		effectiveRetry := effectiveRequestRetryLimit(auth, defaultRequestRetry)
-		if attempt >= effectiveRetry {
+		if retry.effectiveRound(auth, attempt) >= effectiveRetry {
 			continue
 		}
 		checkModel := model
@@ -1898,6 +1907,9 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
+	}
+	if _, ok := err.(*subscriptionRetryError); ok {
+		return 0, true
 	}
 	var homeBusy *HomeConcurrencyBusyError
 	if errors.As(err, &homeBusy) && homeBusy != nil {

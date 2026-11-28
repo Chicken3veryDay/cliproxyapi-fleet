@@ -187,7 +187,26 @@ func unwrapUpstreamExecutionAttempt(err error) error {
 
 func unwrapExecutionBoundaryError(err error) error {
 	unwrapped, _ := unwrapExecutionBoundaryErrorChanged(err)
-	return unwrapped
+	if retry, ok := unwrapped.(*subscriptionRetryError); ok && retry != nil {
+		unwrapped, _ = unwrapExecutionBoundaryErrorChanged(retry.cause)
+	}
+	return hideBillingError(unwrapped)
+}
+
+// hideBillingError keeps an upstream credential's billing response from the client.
+func hideBillingError(err error) error {
+	if isCredentialBillingExhaustedError(err) {
+		return &Error{Code: "auth_unavailable", Message: "upstream credentials are unavailable", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	return err
+}
+
+// Keep an earlier upstream failure when a later credential rejects the request for billing.
+func preferNonBillingAttemptError(previous, current error) error {
+	if previous != nil && isCredentialBillingExhaustedError(current) {
+		return previous
+	}
+	return current
 }
 
 func unwrapExecutionBoundaryErrorChanged(err error) (error, bool) {
@@ -271,7 +290,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) || isSessionAffinityRetryError(fallback) {
 		return fallback
 	}
-	if upstream == nil {
+	if upstream == nil || (fallback != nil && isCredentialBillingExhaustedError(upstream) && !isCredentialBillingExhaustedError(fallback)) {
 		return fallback
 	}
 	var exhausted *homeRetryRoundExhaustedError
@@ -362,6 +381,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	ctx = m.withSubscriptionRetry(ctx, normalized)
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -432,7 +452,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
 		continuitySession.priorAttemptSeen = true
 		if upstreamAttempted {
-			preferredUpstreamErr = errExec
+			preferredUpstreamErr = preferNonBillingAttemptError(preferredUpstreamErr, errExec)
 		}
 		lastErr = keepPreferredCandidateError(lastErr, errExec)
 		if upstreamAttempted && m.isCodexAttemptFailure(errExec, roundAttempted) {
@@ -537,6 +557,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	ctx = m.withSubscriptionRetry(ctx, normalized)
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -567,7 +588,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		}
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
 		if hasUpstreamExecutionAttempt(errExec) {
-			preferredUpstreamErr = errExec
+			preferredUpstreamErr = preferNonBillingAttemptError(preferredUpstreamErr, errExec)
 		}
 		lastErr = keepPreferredCandidateError(lastErr, errExec)
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, normalized, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
@@ -624,6 +645,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, errThread
 	}
 
+	if !m.HomeEnabled() {
+		ctx = m.withSubscriptionRetry(ctx, normalized)
+	}
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -682,7 +706,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		upstreamAttempted := hasUpstreamExecutionAttempt(errStream)
 		if upstreamAttempted {
 			if isDirectStreamTerminalError(errStream) {
-				preferredUpstreamErr = errStream
+				preferredUpstreamErr = preferNonBillingAttemptError(preferredUpstreamErr, errStream)
 			} else {
 				syncPreferredUpstreamError(&preferredUpstreamErr, errStream)
 			}
@@ -916,6 +940,9 @@ func isCredentialTerminateScope(scope string) bool {
 
 func keepPreferredCandidateError(current, next error) error {
 	if next == nil {
+		return current
+	}
+	if current != nil && isCredentialBillingExhaustedError(next) {
 		return current
 	}
 	if isCredentialTerminatedError(current) && !isCredentialTerminatedError(next) && !hasUpstreamExecutionAttempt(next) {
@@ -1154,7 +1181,7 @@ func syncPreferredUpstreamError(upstreamErr *error, errExec error) {
 		}
 		return
 	}
-	*upstreamErr = errExec
+	*upstreamErr = preferNonBillingAttemptError(*upstreamErr, errExec)
 }
 
 func isEmptyStreamError(err error) bool {
@@ -1241,12 +1268,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	baseMetadata := opts.Metadata
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
+	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	for authID := range requestRefusedAuthsFromContext(ctx) {
 		tried[authID] = struct{}{}
 	}
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1275,11 +1303,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		if errPick == nil {
 			updateInFlightScopeProvider(ctx, provider)
 		}
 		if errPick != nil {
+			if _, retry := errPick.(*subscriptionRetryError); retry {
+				return cliproxyexecutor.Response{}, errPick
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, roundPickFailureError(lastErr, upstreamErr, errPick)
 			}
@@ -1342,6 +1373,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if !okAction && isRequestInvalidError(errPrepare) {
 				return cliproxyexecutor.Response{}, errPrepare
 			}
+			subscriptionRetry.observeFailure(execCtx, auth, errPrepare)
 			lastErr = keepPreferredCandidateError(lastErr, errPrepare)
 			continue
 		}
@@ -1413,6 +1445,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			var preRefreshExecErr error
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			syncActiveAuth()
+			errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -1433,6 +1466,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
 					syncActiveAuth()
+					errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1503,6 +1537,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			return resp, nil
 		}
 		if authErr != nil {
+			subscriptionRetry.observeFailure(execCtx, auth, authErr)
 			if isCredentialTerminatedError(authErr) {
 				lastErr = authErr
 				if homeMode {
@@ -1544,12 +1579,13 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	baseMetadata := opts.Metadata
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
+	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	for authID := range requestRefusedAuthsFromContext(ctx) {
 		tried[authID] = struct{}{}
 	}
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1578,11 +1614,14 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 		if errPick == nil {
 			updateInFlightScopeProvider(ctx, provider)
 		}
 		if errPick != nil {
+			if _, retry := errPick.(*subscriptionRetryError); retry {
+				return cliproxyexecutor.Response{}, errPick
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, roundPickFailureError(lastErr, upstreamErr, errPick)
 			}
@@ -1645,6 +1684,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if !okAction && isRequestInvalidError(errPrepare) {
 				return cliproxyexecutor.Response{}, errPrepare
 			}
+			subscriptionRetry.observeFailure(execCtx, auth, errPrepare)
 			lastErr = keepPreferredCandidateError(lastErr, errPrepare)
 			continue
 		}
@@ -1716,6 +1756,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			var preRefreshExecErr error
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			syncActiveAuth()
+			errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -1736,6 +1777,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					syncActiveAuth()
+					errExec = normalizeSubscriptionTransport(execCtx, auth, errExec)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1811,6 +1853,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			return resp, nil
 		}
 		if authErr != nil {
+			subscriptionRetry.observeFailure(execCtx, auth, authErr)
 			if isCredentialTerminatedError(authErr) {
 				lastErr = authErr
 				if homeMode {
@@ -1853,6 +1896,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	baseMetadata := opts.Metadata
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
+	subscriptionRetry := subscriptionRetryFromContext(ctx)
 	tried := make(map[string]struct{})
 	homeExcludedAuthIDs := make(map[string]struct{})
 	for authID := range requestRefusedAuthsFromContext(ctx) {
@@ -1864,7 +1908,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		homeExcludedAuthIDs[authID] = struct{}{}
 	}
 	if !homeMode {
-		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+		for authID := range m.requestRetryRoundExclusions(retryRound, subscriptionRetry, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1916,12 +1960,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+			auth, executor, provider, errPick = m.pickNextMixedWithSubscriptionRetry(ctx, providers, routeModel, pickOpts, tried, retryRound, defaultRequestRetry, attempted)
 			if errPick == nil {
 				updateInFlightScopeProvider(ctx, provider)
 			}
 		}
 		if errPick != nil {
+			if _, retry := errPick.(*subscriptionRetryError); retry {
+				return nil, errPick
+			}
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if homeMode && lastErr != nil && errors.As(errPick, &homeCooldown) && homeCooldown != nil {

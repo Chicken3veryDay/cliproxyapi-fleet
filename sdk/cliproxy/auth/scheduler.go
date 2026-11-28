@@ -1466,11 +1466,37 @@ func (m *modelScheduler) pickReadyLocked(preferWebsocket bool, strategy schedule
 		return nil
 	}
 	m.promoteExpiredLocked(time.Now())
+	if preferWebsocket && m.hasReadySubscriptionLocked(predicate) {
+		// The WebSocket preference may cross priority tiers, but never from a
+		// ready subscription down to the provider's paid keys.
+		predicate = excludePaidKeys(predicate)
+	}
 	priorityReady, okPriority := m.highestReadyPriorityLocked(preferWebsocket, predicate)
 	if !okPriority {
 		return nil
 	}
 	return m.pickReadyAtPriorityLocked(preferWebsocket, priorityReady, strategy, predicate)
+}
+
+func (m *modelScheduler) hasReadySubscriptionLocked(predicate func(*scheduledAuth) bool) bool {
+	for _, priority := range m.priorityOrder {
+		bucket := m.readyByPriority[priority]
+		if bucket == nil {
+			continue
+		}
+		for _, entry := range bucket.all.flat {
+			if entry != nil && isSubscriptionTier(entry.auth) && (predicate == nil || predicate(entry)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func excludePaidKeys(predicate func(*scheduledAuth) bool) func(*scheduledAuth) bool {
+	return func(entry *scheduledAuth) bool {
+		return entry != nil && !isPaidKey(entry.auth) && (predicate == nil || predicate(entry))
+	}
 }
 
 // highestReadyPriorityLocked returns the highest priority bucket that still has a matching ready auth.

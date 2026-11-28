@@ -272,6 +272,10 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 					}
 				}
 			}
+			if chunk.Err != nil {
+				// The cooldown above saw the upstream error; the client does not.
+				chunk.Err = hideBillingError(chunk.Err)
+			}
 			if !forward {
 				return false
 			}
@@ -777,6 +781,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		startStream := time.Now()
 		streamResult, errStream := executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
 		syncActiveAuth()
+		errStream = normalizeSubscriptionTransport(attemptCtx, auth, errStream)
 		errStream = markUpstreamExecutionAttemptFromContext(attemptCtx, errStream)
 		durationStream := time.Since(startStream)
 		if errStream != nil {
@@ -805,6 +810,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					startRetry := time.Now()
 					streamResult, errStream = executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
 					syncActiveAuth()
+					errStream = normalizeSubscriptionTransport(attemptCtx, auth, errStream)
 					errStream = markUpstreamExecutionAttemptFromContext(attemptCtx, errStream)
 					durationRetry := time.Since(startRetry)
 					if errStream != nil {
@@ -833,6 +839,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if errStream != nil {
 			abandonAttempt(streamResult)
 			recordAntigravityAttemptedModelFromAttempt(ctx, execCtx, provider, auth.ID, resultModel, errStream)
+			subscriptionRetryFromContext(ctx).observeFailure(ctx, auth, errStream)
 			rerr := resultErrorFromError(errStream)
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(execCtx))
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
@@ -911,6 +918,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					startRetry := time.Now()
 					retryStream, retryErr := executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
 					syncActiveAuth()
+					retryErr = normalizeSubscriptionTransport(attemptCtx, auth, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(attemptCtx, retryErr)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(attemptCtx, retryErr)

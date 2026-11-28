@@ -13,6 +13,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -1043,15 +1044,17 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				} else if streamErr, _, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 					credentialErr = streamErr
 				}
-				var status interface{ StatusCode() int }
-				if errors.As(credentialErr, &status) && (status.StatusCode() == http.StatusUnauthorized || status.StatusCode() == http.StatusForbidden || status.StatusCode() == http.StatusTooManyRequests) {
+				status := clienterror.HTTPStatusFromError(credentialErr)
+				billing := clienterror.IsCredentialBillingExhausted(status, credentialErr)
+				if billing || status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests {
 					// Account health is independent of which queued request failed.
 					// The conductor records the original classification without replaying
 					// this already-started stream on another credential.
 					reporter.PublishFailure(ctx, credentialErr)
-					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
-						send(cliproxyexecutor.StreamChunk{Err: credentialErr})
+					if !billing && !send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+						return
 					}
+					send(cliproxyexecutor.StreamChunk{Err: credentialErr})
 					return
 				}
 			}
