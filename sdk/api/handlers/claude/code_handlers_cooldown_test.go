@@ -48,8 +48,14 @@ func TestClaudeCooldownMessageMatchesRetryAfter(t *testing.T) {
 			if got := recorder.Header().Get("Retry-After"); got != tt.header {
 				t.Fatalf("Retry-After = %q, want %q", got, tt.header)
 			}
-			if got := ojson.GetBytesNoCopy(recorder.Body.Bytes(), "error.type").String(); got != "rate_limit_error" {
-				t.Fatalf("error.type = %q, want rate_limit_error", got)
+			// Fleet: cooldowns of 5 minutes or more carry usage_limit_reached so
+			// clients end the turn instead of retrying for hours.
+			wantType := "rate_limit_error"
+			if tt.duration >= 5*time.Minute {
+				wantType = "usage_limit_reached"
+			}
+			if got := ojson.GetBytesNoCopy(recorder.Body.Bytes(), "error.type").String(); got != wantType {
+				t.Fatalf("error.type = %q, want %s", got, wantType)
 			}
 			message := ojson.GetBytesNoCopy(recorder.Body.Bytes(), "error.message").String()
 			if !strings.Contains(message, "cooling down") || !strings.Contains(message, "reset after "+tt.resetAfter) {

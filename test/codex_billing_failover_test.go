@@ -255,8 +255,10 @@ func TestCodexResponsesBillingErrorFailsOverFromAPIKeyToOAuth(t *testing.T) {
 				if tc.afterTool {
 					expectedMarker = "web_search_call"
 				}
-				if !strings.Contains(firstBody, expectedMarker) || !strings.Contains(firstBody, "credit_balance_exhausted") {
-					t.Fatalf("committed-stream body must deliver %s and in-stream billing error: %s", expectedMarker, firstBody)
+				// The fleet hub hides the upstream billing response from clients
+				// (hideBillingError); the committed stream still ends in an error event.
+				if !strings.Contains(firstBody, expectedMarker) || !strings.Contains(firstBody, "event: error") || !strings.Contains(firstBody, "auth_unavailable") || strings.Contains(firstBody, "credit_balance_exhausted") {
+					t.Fatalf("committed-stream body must deliver %s and a hidden in-stream billing error: %s", expectedMarker, firstBody)
 				}
 				if strings.Contains(firstBody, "resp_sub") {
 					t.Fatalf("committed-stream must not replay on subscription credential: %s", firstBody)
